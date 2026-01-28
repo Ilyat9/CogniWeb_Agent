@@ -1,11 +1,27 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 venv/
+.venv/
 
-# Secrets & Config
+# Environment & Secrets (КРИТИЧНО)
 .env
+cookies.json
+*.session
+*.auth
+
+# Browser data & Stealth
 browser_data/
+.auth/
+user_data/
+
+# Logs & Debug
+*.log
+screenshots/
+network_traces/
+.pytest_cache/
 
 # OS
 .DS_Store
+Thumbs.db

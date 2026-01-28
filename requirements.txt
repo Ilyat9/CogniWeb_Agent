@@ -1,11 +1,14 @@
-# Core Dependencies
+# Core Dependencies (UPDATED)
 playwright==1.41.0
 beautifulsoup4==4.12.3
-openai==1.12.0
+openai>=1.0.0  # SDK v1.0+ с поддержкой httpx
+httpx==0.26.0  # Для прокси
 tenacity==8.2.3
 
-# Additional utilities
+# Environment variables
 python-dotenv==1.0.1
+
+# HTML parsing
 lxml==5.1.0
 
 # Development (optional)
