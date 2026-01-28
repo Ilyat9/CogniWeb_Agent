@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 import sys
 sys.path.insert(0, '.')
 from main import (
-    Config, DOMProcessor, LLMClient, Agent,
+    Config, EnhancedDOMProcessor, LLMClient, Agent,
     SYSTEM_PROMPT
 )
 
@@ -49,9 +49,9 @@ class TestConfig:
         
         config = Config.from_env()
         
-        assert config.max_steps == 15
+        assert config.max_steps == 20
         assert config.headless == False
-        assert config.temperature == 0.2
+        assert config.temperature == 0.1
 
 
 # ============================================================================
@@ -64,7 +64,7 @@ class TestDOMProcessor:
     @pytest.fixture
     def processor(self):
         """Create a DOM processor instance."""
-        return DOMProcessor()
+        return EnhancedDOMProcessor()
     
     @pytest.fixture
     def mock_page(self):
@@ -190,7 +190,7 @@ class TestAgent:
             "args": {}
         })
         
-        decision = agent._parse_llm_response(response)
+        decision = agent._parse_action(response)
         
         assert decision["action_type"] == "click"
         assert decision["element_id"] == 5
@@ -207,7 +207,7 @@ class TestAgent:
 }
 ```"""
         
-        decision = agent._parse_llm_response(response)
+        decision = agent._parse_action(response)
         
         assert decision["action_type"] == "type"
         assert decision["args"]["text"] == "hello"
@@ -217,7 +217,7 @@ class TestAgent:
         response = "This is not JSON at all"
         
         with pytest.raises(ValueError, match="Invalid JSON"):
-            agent._parse_llm_response(response)
+            agent._parse_action(response)
     
     def test_validate_decision_checks_action_type(self, agent):
         """Test that validation requires action_type field."""
@@ -307,7 +307,7 @@ class TestIntegration:
             agent = Agent(mock_config)
             agent.browser = mock_browser
             
-            observation = agent._observe()
+            observation = agent.self.browser.get_page_state()
             
             assert "example.com" in observation
             assert "BUTTON" in observation or "button" in observation.lower()
