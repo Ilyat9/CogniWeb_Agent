@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-CogniWeb Agent v3.0 - Fully Autonomous Browser Agent
-=======================================================
+CogniWeb Agent v3.5 - Senior/Staff Engineer Edition
+====================================================
+
+НОВЫЕ ВОЗМОЖНОСТИ:
+✓ Human-like Interactions - Эмуляция поведения реального пользователя
+✓ Breadcrumbs System - Система хлебных крошек для предотвращения зацикливания
+✓ Graceful Degeneracy - Умное завершение с полным отчетом
+✓ Improved CAPTCHA Detection - Устранение ложных срабатываний
+✓ Zero-Touch UX - Запуск с about:blank, агент сам выбирает начальный URL
 
 Критические возможности:
 - Абсолютная автономность (NO hardcoded selectors)
@@ -22,11 +29,13 @@ import time
 import re
 import logging
 import hashlib
+import random
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections import deque
 from enum import Enum
+from datetime import datetime
 
 # Load environment variables FIRST
 from dotenv import load_dotenv
@@ -88,8 +97,8 @@ class Config:
     http_connect_timeout: float = 30.0
     
     # Token Economy Configuration
-    max_dom_elements: int = 50  # Limit elements per page
-    max_text_length: int = 500  # Max chars for text content
+    max_dom_elements: int = 150  # Limit elements per page
+    max_text_length: int = 300  # Max chars for text content
     max_history_turns: int = 10  # Keep only last N turns
     
     # Popup/Captcha Detection
@@ -99,11 +108,13 @@ class Config:
     # Human-like Behavior
     min_action_delay: float = 1.0
     max_action_delay: float = 3.0
-    typing_delay: int = 100  # ms between keystrokes
+    typing_delay_min: int = 50  # ms between keystrokes
+    typing_delay_max: int = 150  # ms between keystrokes
+    mouse_move_steps: int = 10  # steps for mouse movement
     
     @classmethod
     def from_env(cls) -> 'Config':
-        """Load configuration from environment variables."""
+        """Загрузить конфигурацию из переменных окружения."""
         api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
         if not api_key:
             raise ValueError(
@@ -118,6 +129,94 @@ class Config:
             user_data_dir=os.getenv("USER_DATA_DIR", "./browser_data"),
             headless=os.getenv("HEADLESS", "false").lower() == "true",
         )
+
+
+# ============================================================================
+# Breadcrumbs Tracker - Защита от зацикливания
+# ============================================================================
+
+@dataclass
+class ActionRecord:
+    """Запись о выполненном действии."""
+    action_type: str
+    target: str
+    timestamp: float
+
+
+class BreadcrumbsTracker:
+    """
+    Система хлебных крошек для отслеживания действий и предотвращения зацикливания.
+    
+    Логика:
+    - Хранит последние N действий (deque с maxlen)
+    - Проверяет повторение одинаковых действий подряд
+    - Если действие повторяется 3+ раз, возвращает предупреждение
+    """
+    
+    def __init__(self, max_history: int = 10, max_repeats: int = 3):
+        """
+        Args:
+            max_history: Максимальное количество действий в истории
+            max_repeats: Максимальное количество повторов одного действия
+        """
+        self.history: deque = deque(maxlen=max_history)
+        self.max_repeats = max_repeats
+    
+    def record_action(self, action_type: str, target: str):
+        """
+        Записать выполненное действие.
+        
+        Args:
+            action_type: Тип действия (click, type, navigate и т.д.)
+            target: Цель действия (element_id, URL, текст и т.д.)
+        """
+        record = ActionRecord(
+            action_type=action_type,
+            target=str(target),
+            timestamp=time.time()
+        )
+        self.history.append(record)
+        logger.debug(f"Breadcrumb: {action_type} -> {target}")
+    
+    def check_loop(self) -> Tuple[bool, Optional[str]]:
+        """
+        Проверить, не зациклился ли агент.
+        
+        Returns:
+            (is_looping, warning_message)
+        """
+        if len(self.history) < self.max_repeats:
+            return False, None
+        
+        # Взять последние max_repeats действий
+        recent = list(self.history)[-self.max_repeats:]
+        
+        # Проверить, все ли они одинаковые
+        first = recent[0]
+        all_same = all(
+            r.action_type == first.action_type and r.target == first.target
+            for r in recent
+        )
+        
+        if all_same:
+            warning = (
+                f"⚠️ LOOP DETECTED: Action '{first.action_type}' on '{first.target}' "
+                f"repeated {self.max_repeats} times. Agent should try a different approach."
+            )
+            return True, warning
+        
+        return False, None
+    
+    def get_summary(self) -> str:
+        """Получить краткую сводку последних действий."""
+        if not self.history:
+            return "No actions yet"
+        
+        summary = []
+        for i, record in enumerate(list(self.history)[-5:], 1):
+            summary.append(f"{i}. {record.action_type} -> {record.target}")
+        
+        return "\n".join(summary)
 
 
 # ============================================================================
@@ -222,361 +321,456 @@ class SmartDOMDistiller:
         
         # Selects
         for select in soup.find_all('select'):
-            elements.append(self._extract_element_data(select, 'SELECT', page))
-        
-        # Elements with role="button"
-        for elem in soup.find_all(attrs={'role': 'button'}):
-            if elem.name not in ['button', 'a']:  # Avoid duplicates
-                elements.append(self._extract_element_data(elem, 'CLICKABLE', page))
-        
-        # Filter out None values
-        elements = [e for e in elements if e is not None]
+            options = [opt.get_text(strip=True) for opt in select.find_all('option')]
+            element_data = self._extract_element_data(select, 'SELECT', page)
+            element_data['options'] = options[:10]  # Limit options
+            elements.append(element_data)
         
         return elements
     
-    def _extract_element_data(self, element, elem_type: str, page: Page) -> Optional[Dict]:
-        """Извлечь данные из элемента."""
-        try:
-            # Build selector
-            selector = self._build_selector(element)
-            if not selector:
-                return None
-            
-            # Check if element is visible (crucial for filtering)
-            try:
-                is_visible = page.is_visible(selector, timeout=1000)
-            except:
-                is_visible = False
-            
-            # Get text content
-            text = element.get_text(strip=True)
-            if not text:
-                text = element.get('placeholder', '') or element.get('aria-label', '')
-            
-            # Truncate text
-            if len(text) > self.max_text_length:
-                text = text[:self.max_text_length] + "..."
-            
-            # Get attributes
-            attrs = {}
-            if element.get('href'):
-                attrs['href'] = element['href']
-            if element.get('value'):
-                attrs['value'] = element['value']
-            if element.get('name'):
-                attrs['name'] = element['name']
-            
-            return {
-                'type': elem_type,
-                'text': text,
-                'selector': selector,
-                'attrs': attrs,
-                'visible': is_visible
-            }
-        except Exception as e:
-            logger.debug(f"Failed to extract element: {e}")
-            return None
+    def _extract_element_data(self, element, elem_type: str, page: Page) -> Dict:
+        """Извлечь данные элемента."""
+        # Build selector
+        selector = self._build_selector(element)
+        
+        # Get text content
+        text = element.get_text(strip=True)
+        if len(text) > self.max_text_length:
+            text = text[:self.max_text_length] + "..."
+        
+        # Get attributes
+        attrs = {}
+        for attr in ['id', 'class', 'name', 'placeholder', 'type', 'href', 'value']:
+            val = element.get(attr)
+            if val:
+                if isinstance(val, list):
+                    attrs[attr] = ' '.join(val)
+                else:
+                    attrs[attr] = str(val)
+        
+        return {
+            'type': elem_type,
+            'selector': selector,
+            'text': text,
+            'attrs': attrs
+        }
     
     def _build_selector(self, element) -> str:
-        """Построить надежный CSS селектор для элемента."""
-        # Priority 1: ID (most reliable)
+        """Построить CSS селектор для элемента."""
+        # Priority 1: ID
         if element.get('id'):
             return f"#{element['id']}"
         
-        # Priority 2: Name (for forms)
+        # Priority 2: Name attribute
         if element.get('name'):
-            tag = element.name
-            return f"{tag}[name='{element['name']}']"
+            return f"[name='{element['name']}']"
         
-        # Priority 3: Unique attributes
-        if element.get('data-testid'):
-            return f"[data-testid='{element['data-testid']}']"
+        # Priority 3: Unique combination
+        tag = element.name
+        classes = element.get('class', [])
         
-        # Priority 4: Class + tag combination
-        if element.get('class'):
-            classes = ' '.join(element['class'])
-            return f"{element.name}.{element['class'][0]}"
+        if classes:
+            class_str = '.'.join(classes[:2])  # Use first 2 classes
+            return f"{tag}.{class_str}"
         
-        # Priority 5: XPath-like (last resort)
-        # Build path from root
-        path_parts = []
-        current = element
-        
-        while current and current.name != '[document]':
-            siblings = [s for s in current.parent.children if s.name == current.name] if current.parent else []
-            index = siblings.index(current) + 1 if len(siblings) > 1 else 0
-            
-            if index > 0:
-                path_parts.append(f"{current.name}:nth-of-type({index})")
-            else:
-                path_parts.append(current.name)
-            
-            current = current.parent
-            if len(path_parts) >= 4:  # Limit depth
-                break
-        
-        return " > ".join(reversed(path_parts))
+        # Priority 4: Tag + position (least reliable)
+        return tag
     
     def _prioritize_elements(self, elements: List[Dict]) -> List[Dict]:
         """
         Приоритизировать элементы по важности.
         
-        Критерии (в порядке важности):
-        1. Visible элементы (видимые на экране)
-        2. Интерактивные (buttons, inputs)
-        3. С текстом (не пустые)
+        Приоритет:
+        1. Inputs и buttons (основные действия)
+        2. Links с видимым текстом
+        3. Остальные элементы
         """
-        def element_score(elem: Dict) -> int:
-            score = 0
-            
-            # Visible = +10
-            if elem.get('visible'):
-                score += 10
-            
-            # Interactive types = +5
-            if elem['type'] in ['BUTTON', 'INPUT(submit)', 'LINK']:
-                score += 5
-            
-            # Has text = +3
-            if elem.get('text'):
-                score += 3
-            
-            # Has href/action = +2
-            if elem.get('attrs', {}).get('href'):
-                score += 2
-            
-            return score
+        priority_order = {
+            'INPUT(submit)': 1,
+            'BUTTON': 1,
+            'INPUT(text)': 2,
+            'INPUT(search)': 2,
+            'TEXTAREA': 2,
+            'LINK': 3,
+            'SELECT': 3,
+        }
         
-        # Sort by score (descending)
-        elements.sort(key=element_score, reverse=True)
+        def get_priority(elem):
+            elem_type = elem['type']
+            base_priority = priority_order.get(elem_type, 999)
+            
+            # Boost elements with visible text
+            if elem.get('text') and len(elem['text']) > 2:
+                base_priority -= 0.5
+            
+            return base_priority
         
-        return elements
+        return sorted(elements, key=get_priority)
     
-    def _format_element(self, idx: int, element_data: Dict) -> str:
-        """Форматировать элемент для LLM."""
-        elem_type = element_data['type']
-        text = element_data.get('text', '').strip()
-        attrs = element_data.get('attrs', {})
+    def _format_element(self, idx: int, elem: Dict) -> str:
+        """Форматировать элемент для вывода в LLM."""
+        parts = [f"[{idx}] {elem['type']}"]
         
-        # Format: [ID] TYPE: text (attr1=value1, attr2=value2)
-        parts = [f"[{idx}]", elem_type]
+        if elem.get('text'):
+            parts.append(f"'{elem['text']}'")
         
-        if text:
-            parts.append(f": {text}")
+        # Add key attributes
+        attrs_str = []
+        for key in ['id', 'name', 'placeholder', 'href']:
+            if key in elem.get('attrs', {}):
+                attrs_str.append(f"{key}={elem['attrs'][key]}")
         
-        if attrs:
-            attr_str = ", ".join(f"{k}={v}" for k, v in attrs.items())
-            parts.append(f"({attr_str})")
+        if attrs_str:
+            parts.append(f"({', '.join(attrs_str)})")
+        
+        # Add options for select
+        if 'options' in elem:
+            opts = ', '.join(elem['options'][:5])
+            parts.append(f"[options: {opts}]")
         
         return " ".join(parts)
 
 
 # ============================================================================
-# Popup and Captcha Detector
+# Browser Manager - Playwright wrapper
 # ============================================================================
 
-class PopupDetector:
+class BrowserManager:
     """
-    Детектор и обработчик попапов/капч.
+    Управление браузером через Playwright.
     
-    Обнаруживает:
-    - Cookie banners
-    - Age verification
-    - Newsletters
-    - CAPTCHA (и корректно fail если непроходима)
+    Функции:
+    - Запуск/остановка браузера
+    - Навигация
+    - Закрытие попапов
+    - Скриншоты
+    - Anti-CAPTCHA логика
     """
     
-    POPUP_PATTERNS = [
-        # Cookie banners
-        "accept cookie", "accept all", "agree", "got it",
-        # Age verification  
-        "i am 18", "yes", "enter",
-        # Newsletters
-        "no thanks", "close", "dismiss", "skip",
-        # Generic
-        "×", "✕", "[x]", "close button"
-    ]
+    def __init__(self, config: Config):
+        self.config = config
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self._current_element_map = {}
     
-    CAPTCHA_INDICATORS = [
-        "captcha", "recaptcha", "cloudflare", "verify you are human",
-        "security check", "i'm not a robot"
-    ]
+    def start(self):
+        """Запустить браузер."""
+        logger.info("Starting browser...")
+        
+        self.playwright = sync_playwright().start()
+        
+        # Launch browser with proxy
+        self.browser = self.playwright.chromium.launch(
+            headless=self.config.headless,
+            proxy={"server": self.config.proxy_url} if self.config.proxy_url else None
+        )
+        
+        # Create persistent context
+        user_data_path = Path(self.config.user_data_dir)
+        user_data_path.mkdir(parents=True, exist_ok=True)
+        
+        self.context = self.browser.new_context(
+            viewport={
+                'width': self.config.viewport_width,
+                'height': self.config.viewport_height
+            },
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        )
+        
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(self.config.action_timeout)
+        
+        logger.info("✓ Browser started")
     
-    def detect_overlay(self, page: Page) -> bool:
-        """Проверить, есть ли оверлей на странице."""
-        try:
-            # Check for common overlay patterns
-            overlay_selectors = [
-                "[class*='modal']",
-                "[class*='popup']",
-                "[class*='overlay']",
-                "[role='dialog']",
-                "[class*='cookie']",
-                "[class*='banner']"
-            ]
-            
-            for selector in overlay_selectors:
-                if page.is_visible(selector, timeout=1000):
-                    return True
-            
-            return False
-        except:
-            return False
+    def stop(self):
+        """Остановить браузер."""
+        if self.page:
+            self.page.close()
+        if self.context:
+            self.context.close()
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+        
+        logger.info("Browser stopped")
     
-    def detect_captcha(self, page: Page) -> bool:
-        """Проверить, есть ли CAPTCHA."""
-        try:
-            html = page.content().lower()
-            
-            for indicator in self.CAPTCHA_INDICATORS:
-                if indicator in html:
-                    return True
-            
-            return False
-        except:
-            return False
-    
-    def try_close_popup(self, page: Page) -> bool:
+    def navigate(self, url: str) -> bool:
         """
-        Попытаться закрыть попап.
+        Перейти по URL.
         
         Returns:
-            True если успешно закрыт, False otherwise
+            True если успешно, False если ошибка
         """
         try:
-            html = page.content().lower()
+            logger.info(f"Navigating to: {url}")
             
-            # Try clicking common close patterns
-            for pattern in self.POPUP_PATTERNS:
-                try:
-                    # Try to find by text
-                    page.get_by_text(pattern, exact=False).first.click(timeout=2000)
-                    logger.info(f"Closed popup using pattern: {pattern}")
-                    time.sleep(1)
-                    return True
-                except:
-                    continue
+            response = self.page.goto(
+                url, 
+                wait_until='domcontentloaded',
+                timeout=self.config.page_load_timeout
+            )
             
-            # Try common close button selectors
+            # Wait a bit for JS to load
+            self.page.wait_for_timeout(2000)
+            
+            # Check if navigation was successful
+            if response and response.ok:
+                logger.info(f"✓ Loaded: {self.page.url}")
+                return True
+            else:
+                logger.warning(f"Navigation returned non-OK status")
+                return False
+        
+        except PlaywrightTimeout:
+            logger.warning(f"Navigation timeout (may still be usable)")
+            return True  # Page might be partially loaded
+        
+        except Exception as e:
+            logger.error(f"Navigation failed: {e}")
+            return False
+    
+    def close_popups(self) -> int:
+        """
+        Закрыть всплывающие окна.
+        
+        Returns:
+            Количество закрытых попапов
+        """
+        closed_count = 0
+        
+        try:
+            # Common popup close patterns
             close_selectors = [
-                "button[aria-label*='close']",
-                "button[aria-label*='dismiss']",
-                "[class*='close-button']",
-                "[class*='dismiss']",
-                "button:has-text('×')",
-                "button:has-text('✕')"
+                '[aria-label*="close" i]',
+                '[aria-label*="dismiss" i]',
+                'button:has-text("Close")',
+                'button:has-text("×")',
+                '.modal-close',
+                '.popup-close',
+                '[class*="close"]'
             ]
             
             for selector in close_selectors:
                 try:
-                    page.click(selector, timeout=2000)
-                    logger.info(f"Closed popup using selector: {selector}")
-                    time.sleep(1)
-                    return True
+                    elements = self.page.locator(selector).all()
+                    for elem in elements[:3]:  # Max 3 per selector
+                        try:
+                            if elem.is_visible(timeout=500):
+                                elem.click(timeout=1000)
+                                closed_count += 1
+                                logger.debug(f"Closed popup: {selector}")
+                                time.sleep(0.5)
+                        except:
+                            continue
                 except:
                     continue
             
-            return False
+            if closed_count > 0:
+                logger.info(f"✓ Closed {closed_count} popup(s)")
+        
         except Exception as e:
-            logger.debug(f"Popup close failed: {e}")
+            logger.debug(f"Popup closing error: {e}")
+        
+        return closed_count
+    
+    def take_screenshot(self, name: str = "screenshot") -> str:
+        """
+        Сделать скриншот.
+        
+        Returns:
+            Путь к файлу скриншота
+        """
+        screenshots_dir = Path("./screenshots")
+        screenshots_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = screenshots_dir / f"{name}_{timestamp}.png"
+        
+        self.page.screenshot(path=str(filepath), full_page=True)
+        logger.info(f"Screenshot saved: {filepath}")
+        
+        return str(filepath)
+    
+    def has_interactive_elements(self) -> bool:
+        """
+        ANTI-PARANOIA: Проверить, есть ли на странице интерактивные элементы.
+        Используется для уменьшения false positive CAPTCHA detection.
+        
+        Returns:
+            True если найдены интерактивные элементы (ссылки, кнопки, инпуты)
+        """
+        try:
+            # Проверить наличие базовых интерактивных элементов
+            interactive_selectors = [
+                'a[href]',
+                'button',
+                'input',
+                'textarea',
+                'select'
+            ]
+            
+            for selector in interactive_selectors:
+                elements = self.page.locator(selector).all()
+                # Проверить, есть ли хотя бы один видимый элемент
+                for elem in elements[:5]:  # Проверяем первые 5
+                    try:
+                        if elem.is_visible(timeout=500):
+                            logger.debug(f"Found interactive element: {selector}")
+                            return True
+                    except:
+                        continue
+            
+            return False
+        
+        except Exception as e:
+            logger.debug(f"Error checking interactive elements: {e}")
+            return False
+    
+    def detect_captcha(self) -> bool:
+        """
+        УЛУЧШЕННАЯ ЛОГИКА: Определить, заблокирована ли страница капчей.
+        
+        Логика:
+        1. Ищем признаки CAPTCHA
+        2. Если признаки найдены, проверяем наличие интерактивных элементов
+        3. Если элементы есть - это НЕ блокировка, продолжаем
+        4. Если элементов нет - это действительно CAPTCHA
+        
+        Returns:
+            True если страница заблокирована капчей
+        """
+        try:
+            html = self.page.content()
+            title = self.page.title().lower()
+            url = self.page.url.lower()
+            
+            # Признаки CAPTCHA
+            captcha_indicators = [
+                'captcha' in html.lower(),
+                'recaptcha' in html.lower(),
+                'challenge' in title,
+                'robot' in title,
+                'verify' in title,
+                'cloudflare' in url and 'challenge' in html.lower(),
+            ]
+            
+            # Если найдены признаки CAPTCHA
+            if any(captcha_indicators):
+                logger.warning("⚠️ CAPTCHA indicators detected, checking for interactive elements...")
+                
+                # ANTI-PARANOIA: Проверить, есть ли интерактивные элементы
+                if self.has_interactive_elements():
+                    logger.info("✓ Interactive elements found, page is usable despite CAPTCHA indicators")
+                    return False  # Страница работает, можно продолжать
+                else:
+                    logger.error("✗ No interactive elements, page is truly blocked by CAPTCHA")
+                    return True  # Действительно заблокировано
+            
+            return False
+        
+        except Exception as e:
+            logger.debug(f"CAPTCHA detection error: {e}")
             return False
 
 
 # ============================================================================
-# Context Window Manager
-# ============================================================================
-
-class ContextManager:
-    """
-    Управление историей диалога для экономии токенов.
-    
-    Стратегии:
-    - Скользящее окно (последние N сообщений)
-    - Сжатие старых сообщений
-    - Удаление промежуточных ошибок
-    """
-    
-    def __init__(self, max_turns: int = 10):
-        self.max_turns = max_turns
-        self.history = deque(maxlen=max_turns * 2)  # user + assistant = 2 messages
-    
-    def add_message(self, role: str, content: str):
-        """Добавить сообщение в историю."""
-        self.history.append({"role": role, "content": content})
-    
-    def get_messages(self) -> List[Dict[str, str]]:
-        """Получить сообщения для отправки в LLM."""
-        return list(self.history)
-    
-    def compress_if_needed(self):
-        """Сжать историю если она слишком большая."""
-        if len(self.history) > self.max_turns * 2:
-            # Keep only last max_turns pairs
-            self.history = deque(
-                list(self.history)[-self.max_turns * 2:],
-                maxlen=self.max_turns * 2
-            )
-
-
-# ============================================================================
-# LLM Client with Retry Logic
+# LLM Client - OpenAI API wrapper
 # ============================================================================
 
 class LLMClient:
-    """OpenAI-compatible client с retry механизмами."""
+    """
+    Клиент для работы с LLM (OpenAI API).
+    
+    Функции:
+    - Отправка запросов к модели
+    - Управление историей
+    - Token economy
+    """
     
     def __init__(self, config: Config):
         self.config = config
         
-        # Create HTTP client with proxy
+        # Configure HTTP client with proxy
         http_client = httpx.Client(
-            proxy=config.proxy_url,
+            proxy=config.proxy_url if config.proxy_url else None,
             timeout=httpx.Timeout(
                 timeout=config.http_timeout,
                 connect=config.http_connect_timeout
             )
         )
         
-        # Create OpenAI client
+        # Initialize OpenAI client
         self.client = OpenAI(
             api_key=config.api_key,
             base_url=config.api_base_url,
             http_client=http_client
         )
+        
+        # Conversation history
+        self.messages = []
+        self.max_history = config.max_history_turns
+    
+    def add_system_message(self, content: str):
+        """Добавить системное сообщение."""
+        self.messages.append({
+            "role": "system",
+            "content": content
+        })
+    
+    def add_user_message(self, content: str):
+        """Добавить сообщение пользователя."""
+        self.messages.append({
+            "role": "user",
+            "content": content
+        })
+        
+        # Trim history to save tokens
+        self._trim_history()
+    
+    def add_assistant_message(self, content: str):
+        """Добавить сообщение ассистента."""
+        self.messages.append({
+            "role": "assistant",
+            "content": content
+        })
+    
+    def _trim_history(self):
+        """Обрезать историю для экономии токенов."""
+        # Always keep system message
+        if len(self.messages) > 1:
+            system_msg = self.messages[0]
+            recent_messages = self.messages[-(self.max_history * 2):]
+            self.messages = [system_msg] + recent_messages
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=4, max=30),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError))
     )
-    def chat(self, messages: List[Dict[str, str]], system_prompt: str) -> str:
+    def get_completion(self) -> str:
         """
-        Отправить запрос в LLM.
-        
-        Args:
-            messages: История диалога
-            system_prompt: Системный промпт
+        Получить ответ от LLM.
         
         Returns:
-            Ответ модели (строка)
+            Текст ответа модели
         """
-        all_messages = [{"role": "system", "content": system_prompt}] + messages
-        
-        logger.info(f"LLM request: {len(messages)} messages, {sum(len(m['content']) for m in messages)} chars")
-        
         try:
             response = self.client.chat.completions.create(
                 model=self.config.model_name,
-                messages=all_messages,
+                messages=self.messages,
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature
             )
             
-            reply = response.choices[0].message.content
+            content = response.choices[0].message.content
             
-            logger.info(f"LLM response: {len(reply)} chars")
+            # Add to history
+            self.add_assistant_message(content)
             
-            return reply
+            return content
         
         except Exception as e:
             logger.error(f"LLM API error: {e}")
@@ -584,378 +778,274 @@ class LLMClient:
 
 
 # ============================================================================
-# Browser Manager with Anti-Detection
-# ============================================================================
-
-class BrowserManager:
-    """Управление браузером с anti-bot мерами."""
-    
-    def __init__(self, config: Config):
-        self.config = config
-        self.playwright = None
-        self.context = None
-        self.page = None
-    
-    def __enter__(self):
-        """Initialize browser."""
-        self.playwright = sync_playwright().start()
-        
-        # Launch persistent context (saves cookies)
-        self.context = self.playwright.chromium.launch_persistent_context(
-            user_data_dir=self.config.user_data_dir,
-            headless=self.config.headless,
-            proxy={"server": self.config.proxy_url},
-            viewport={
-                'width': self.config.viewport_width,
-                'height': self.config.viewport_height
-            },
-            user_agent=(
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/120.0.0.0 Safari/537.36'
-            ),
-            # Anti-detection
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox'
-            ]
-        )
-        
-        # Remove webdriver property
-        self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
-        
-        # Get first page
-        if self.context.pages:
-            self.page = self.context.pages[0]
-        else:
-            self.page = self.context.new_page()
-        
-        # Set timeouts
-        self.page.set_default_timeout(self.config.action_timeout)
-        
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Cleanup."""
-        try:
-            if self.context:
-                self.context.close()
-            if self.playwright:
-                self.playwright.stop()
-        except:
-            pass
-    
-    def navigate(self, url: str) -> bool:
-        """Navigate to URL with retry."""
-        try:
-            logger.info(f"Navigating to: {url}")
-            
-            response = self.page.goto(
-                url,
-                timeout=self.config.page_load_timeout,
-                wait_until='domcontentloaded'
-            )
-            
-            # Wait a bit for JS to load
-            time.sleep(2)
-            
-            return response.ok if response else True
-        
-        except PlaywrightTimeout:
-            logger.warning(f"Navigation timeout for {url}")
-            return False
-        except Exception as e:
-            logger.error(f"Navigation error: {e}")
-            return False
-    
-    def get_html(self) -> str:
-        """Get current page HTML."""
-        return self.page.content()
-    
-    def get_url(self) -> str:
-        """Get current URL."""
-        return self.page.url
-
-
-# ============================================================================
-# System Prompt - Optimized for Autonomy
-# ============================================================================
-
-SYSTEM_PROMPT = """You are an autonomous web browser agent. Your goal is to accomplish user tasks by interacting with web pages.
-
-## INPUT FORMAT
-You receive the current page state as:
-```
-URL: https://example.com
-Title: Page Title
-
-Interactive Elements:
-[0] BUTTON: Click Me (type=submit)
-[1] INPUT(text): Email Address (name=email)
-[2] LINK: Sign Up (href=/register)
-...
-```
-
-## YOUR TASK
-Analyze the page and decide the NEXT SINGLE ACTION to take.
-
-## AVAILABLE ACTIONS
-
-1. **click** - Click an element
-   ```json
-   {"thought": "...", "action_type": "click", "element_id": 5, "args": {}}
-   ```
-
-2. **type** - Type text into an input
-   ```json
-   {"thought": "...", "action_type": "type", "element_id": 3, "args": {"text": "hello@example.com"}}
-   ```
-
-3. **select** - Select dropdown option
-   ```json
-   {"thought": "...", "action_type": "select", "element_id": 7, "args": {"value": "option1"}}
-   ```
-
-4. **scroll** - Scroll page
-   ```json
-   {"thought": "...", "action_type": "scroll", "args": {"direction": "down"}}
-   ```
-
-5. **navigate** - Navigate to URL
-   ```json
-   {"thought": "...", "action_type": "navigate", "args": {"url": "https://example.com"}}
-   ```
-
-6. **wait** - Wait some seconds
-   ```json
-   {"thought": "...", "action_type": "wait", "args": {"seconds": 3}}
-   ```
-
-7. **done** - Task completed successfully
-   ```json
-   {"thought": "Task is complete because...", "action_type": "done", "args": {}}
-   ```
-
-8. **fail** - Cannot complete task
-   ```json
-   {"thought": "Cannot proceed because...", "action_type": "fail", "args": {"reason": "..."}}
-   ```
-
-## CRITICAL RULES
-
-1. **ALWAYS output valid JSON** - No markdown, no extra text
-2. **ALWAYS include "thought"** - Explain your reasoning BEFORE acting
-3. **ONLY use element IDs from the current page** - Never hallucinate IDs
-4. **Think step-by-step** - Don't rush, plan your approach
-5. **Handle errors gracefully** - If action fails, try alternative approach
-6. **Detect blockers** - If you see CAPTCHA or cannot proceed, use "fail"
-
-## THINKING PROCESS
-
-Before each action, explicitly state:
-- What you observe on the page
-- What the goal is
-- Why this action will help
-- What you expect to happen
-
-Example:
-```json
-{
-  "thought": "I see the page has loaded successfully. There's a search input field (element 2) and a search button (element 5). My task is to search for 'Python'. I'll first type into the search box, then click the button.",
-  "action_type": "type",
-  "element_id": 2,
-  "args": {"text": "Python"}
-}
-```
-
-## RESPONSE FORMAT
-
-ALWAYS respond with ONLY a JSON object:
-```json
-{
-  "thought": "Your detailed reasoning here",
-  "action_type": "action_name",
-  "element_id": <number> (if applicable),
-  "args": {<key>: <value>}
-}
-```
-
-NO markdown, NO explanations outside JSON, NO excuses. Just pure JSON.
-"""
-
-
-# ============================================================================
-# Autonomous Agent - Main Class
+# Autonomous Agent - Main orchestrator
 # ============================================================================
 
 class AutonomousAgent:
     """
-    Полностью автономный агент.
+    Автономный агент для решения задач в браузере.
     
-    Цикл: Observe → Think → Act
-    Никаких хардкод-сценариев, только обобщенная логика.
+    Архитектура:
+    1. Observe - получить состояние страницы
+    2. Think - запросить решение у LLM
+    3. Act - выполнить действие
+    4. Repeat
     """
     
     def __init__(self, config: Config):
         self.config = config
-        self.llm_client = LLMClient(config)
+        self.browser = BrowserManager(config)
+        self.llm = LLMClient(config)
         self.dom_processor = SmartDOMDistiller(
             max_elements=config.max_dom_elements,
             max_text_length=config.max_text_length
         )
-        self.popup_detector = PopupDetector()
-        self.context_manager = ContextManager(max_turns=config.max_history_turns)
-        self.browser = None
+        self.breadcrumbs = BreadcrumbsTracker()
+        
+        # State
+        self.task = ""
+        self.step_count = 0
+        self.task_completed = False
+        self.task_report = []
     
     def run(self, task: str, starting_url: Optional[str] = None) -> bool:
         """
-        Выполнить задачу автономно.
+        Выполнить задачу.
         
         Args:
-            task: Описание задачи на естественном языке
-            starting_url: Начальный URL (опционально)
+            task: Описание задачи
+            starting_url: Начальный URL (опционально, если None - начинаем с about:blank)
         
         Returns:
-            True если задача выполнена, False otherwise
+            True если задача выполнена успешно
         """
-        logger.info(f"Starting task: {task}")
+        self.task = task
+        logger.info(f"\n{'='*70}")
+        logger.info(f"TASK: {task}")
+        logger.info(f"{'='*70}\n")
         
-        with BrowserManager(self.config) as browser:
-            self.browser = browser
+        try:
+            # Start browser
+            self.browser.start()
             
-            # Navigate to starting URL if provided
-            if starting_url:
-                if not browser.navigate(starting_url):
-                    logger.error("Failed to navigate to starting URL")
-                    return False
+            # ZERO-TOUCH UX: Если URL не указан, начинаем с about:blank
+            if starting_url is None:
+                logger.info("No starting URL provided, agent will choose the first URL")
+                self.browser.navigate("about:blank")
+            else:
+                self.browser.navigate(starting_url)
             
-            # Add task to context
-            self.context_manager.add_message("user", f"TASK: {task}")
+            # Initialize LLM with system prompt
+            self._init_system_prompt()
             
-            # Main loop: Observe → Think → Act
-            for step in range(1, self.config.max_steps + 1):
-                logger.info(f"\n{'='*60}\nSTEP {step}/{self.config.max_steps}\n{'='*60}")
+            # Main agent loop
+            while self.step_count < self.config.max_steps:
+                self.step_count += 1
+                logger.info(f"\n--- STEP {self.step_count}/{self.config.max_steps} ---")
                 
-                # OBSERVE
+                # 1. OBSERVE
                 observation = self._observe()
-                if not observation:
-                    logger.error("Failed to observe page")
-                    return False
                 
-                self.context_manager.add_message("user", observation)
+                # Check for CAPTCHA
+                if observation.get('captcha_detected'):
+                    logger.error("CAPTCHA detected, cannot proceed")
+                    self.task_report.append(f"Step {self.step_count}: CAPTCHA detected")
+                    break
                 
-                # THINK
-                decision = self._think()
+                # 2. THINK
+                decision = self._think(observation)
+                
                 if not decision:
-                    logger.error("Failed to get decision from LLM")
-                    return False
+                    logger.error("Failed to get valid decision from LLM")
+                    self.task_report.append(f"Step {self.step_count}: LLM decision failed")
+                    break
                 
                 # Log thought process
-                logger.info(f"💭 Thought: {decision.get('thought', 'No thought provided')}")
-                logger.info(f"🎯 Action: {decision['action_type']}")
+                if 'thought' in decision:
+                    logger.info(f"Thinking: {decision['thought']}")
+                    self.task_report.append(f"Step {self.step_count} Thinking: {decision['thought']}")
                 
-                # Check for completion
-                if decision['action_type'] == 'done':
-                    logger.info("✓ Task completed successfully!")
-                    return True
+                # Check for task completion
+                if decision.get('action_type') == 'done':
+                    logger.info("✓ Task marked as complete by agent")
+                    self.task_completed = True
+                    self.task_report.append(f"Step {self.step_count}: Task completed")
+                    break
                 
-                if decision['action_type'] == 'fail':
-                    reason = decision.get('args', {}).get('reason', 'Unknown')
-                    logger.error(f"✗ Task failed: {reason}")
-                    return False
-                
-                # ACT
+                # 3. ACT
                 result = self._act(decision)
                 
-                # Report result back to LLM
-                if result['success']:
-                    logger.info(f"✓ Action successful: {result['message']}")
-                    self.context_manager.add_message("user", f"Result: SUCCESS - {result['message']}")
-                else:
-                    logger.warning(f"✗ Action failed: {result['message']}")
-                    self.context_manager.add_message("user", f"Result: FAILED - {result['message']}")
+                # Log result
+                logger.info(f"Action result: {result.get('message', 'N/A')}")
+                self.task_report.append(
+                    f"Step {self.step_count} Action: {decision.get('action_type')} - {result.get('message')}"
+                )
                 
-                # Human-like delay
-                import random
-                delay = random.uniform(self.config.min_action_delay, self.config.max_action_delay)
-                time.sleep(delay)
+                if not result.get('success'):
+                    logger.warning(f"Action failed: {result.get('message')}")
                 
-                # Compress context if needed
-                self.context_manager.compress_if_needed()
+                # Check for loops
+                is_looping, warning = self.breadcrumbs.check_loop()
+                if is_looping:
+                    logger.error(warning)
+                    self.task_report.append(f"Step {self.step_count}: {warning}")
+                    # Add warning to LLM context
+                    self.llm.add_user_message(
+                        f"WARNING: {warning}\n"
+                        "You are stuck in a loop. Please try a completely different approach."
+                    )
             
-            logger.warning("Reached max steps without completion")
-            return False
-    
-    def _observe(self) -> Optional[str]:
-        """
-        Наблюдение: Получить состояние страницы.
+            # Check if max steps reached
+            if self.step_count >= self.config.max_steps:
+                logger.warning("Max steps reached without completion")
+                self.task_report.append("Max steps reached")
+            
+            return self.task_completed
         
-        Включает:
-        - Детекцию и закрытие попапов
-        - Детекцию CAPTCHA
-        - Упрощение DOM
-        """
-        try:
-            # Check for popups/overlays
-            if self.config.popup_detection_enabled:
-                if self.popup_detector.detect_overlay(self.browser.page):
-                    logger.info("Popup detected, attempting to close...")
-                    
-                    for attempt in range(self.config.max_popup_close_attempts):
-                        if self.popup_detector.try_close_popup(self.browser.page):
-                            logger.info("Popup closed successfully")
-                            time.sleep(1)
-                            break
-                    else:
-                        logger.warning("Failed to close popup after all attempts")
-            
-            # Check for CAPTCHA
-            if self.popup_detector.detect_captcha(self.browser.page):
-                logger.error("CAPTCHA detected - cannot proceed automatically")
-                return "OBSERVATION: CAPTCHA detected on page. Cannot proceed. Use 'fail' action."
-            
-            # Get HTML
-            html = self.browser.get_html()
-            
-            # Process DOM
-            dom_text, element_map = self.dom_processor.process_page(html, self.browser.page)
-            
-            # Store element map for action execution
-            self.browser._current_element_map = element_map
-            
-            logger.info(f"Observed {len(element_map)} interactive elements")
-            
-            return f"OBSERVATION:\n{dom_text}"
+        except KeyboardInterrupt:
+            logger.info("\nTask interrupted by user")
+            self.task_report.append("Interrupted by user")
+            raise
         
         except Exception as e:
-            logger.error(f"Observation error: {e}")
-            return None
+            logger.error(f"Fatal error during task execution: {e}", exc_info=True)
+            self.task_report.append(f"Fatal error: {str(e)}")
+            return False
+        
+        finally:
+            # GRACEFUL DEGENERACY: Финальный отчет
+            self._save_final_report()
+            
+            # Final screenshot
+            try:
+                screenshot_path = self.browser.take_screenshot("final")
+                logger.info(f"Final screenshot: {screenshot_path}")
+            except:
+                pass
+            
+            # Cleanup
+            self.browser.stop()
     
-    def _think(self) -> Optional[Dict]:
+    def _init_system_prompt(self):
+        """Инициализировать системный промпт для LLM."""
+        system_prompt = f"""You are an autonomous web navigation agent. Your task is to help users accomplish goals on the web.
+
+TASK: {self.task}
+
+You work in a loop:
+1. OBSERVE - You receive the current page state (URL, title, interactive elements)
+2. THINK - You reason about what to do next (ALWAYS include your reasoning in "thought" field)
+3. ACT - You choose an action to perform
+
+Available actions:
+- navigate: Go to a URL (use this if starting from about:blank)
+- click: Click an element by ID
+- type: Type text into an input field
+- select: Select an option from a dropdown
+- scroll: Scroll the page (up/down)
+- wait: Wait for N seconds
+- done: Mark task as complete
+
+Response format (JSON):
+{{
+    "thought": "Your reasoning about what to do next and why",
+    "action_type": "navigate|click|type|select|scroll|wait|done",
+    "element_id": 123,  // Required for click/type/select
+    "args": {{  // Action-specific arguments
+        "url": "https://example.com",  // For navigate
+        "text": "search query",  // For type
+        "value": "option1",  // For select
+        "direction": "down",  // For scroll
+        "seconds": 2  // For wait
+    }}
+}}
+
+IMPORTANT RULES:
+1. ALWAYS start with "thought" - explain your reasoning
+2. Be methodical and careful
+3. If you make a mistake, try a different approach
+4. When task is complete, use action_type: "done"
+5. Prefer simple, direct paths to the goal
+6. If you encounter obstacles, adapt your strategy
+
+SPECIAL INSTRUCTIONS:
+- If starting from about:blank, your FIRST action should be to navigate to a relevant URL
+- You can use search engines (google.com, bing.com) to find information
+- Be patient with slow pages - wait if needed
+- If an element is not found, try scrolling or navigating differently
+"""
+        
+        self.llm.add_system_message(system_prompt)
+    
+    def _observe(self) -> Dict:
         """
-        Мышление: Получить решение от LLM.
+        OBSERVE: Получить текущее состояние страницы.
         
         Returns:
-            Decision dict или None если не удалось
+            Dict с информацией о странице
         """
+        logger.info("Observing page state...")
+        
+        # Close any popups
+        if self.config.popup_detection_enabled:
+            self.browser.close_popups()
+        
+        # Check for CAPTCHA
+        captcha_detected = self.browser.detect_captcha()
+        
+        # Get page HTML
+        html = self.browser.page.content()
+        
+        # Process DOM
+        dom_text, element_map = self.dom_processor.process_page(html, self.browser.page)
+        
+        # Store element map for later use
+        self.browser._current_element_map = element_map
+        
+        return {
+            'dom': dom_text,
+            'element_map': element_map,
+            'captcha_detected': captcha_detected,
+            'url': self.browser.page.url,
+            'title': self.browser.page.title()
+        }
+    
+    def _think(self, observation: Dict) -> Optional[Dict]:
+        """
+        THINK: Запросить решение у LLM.
+        
+        Args:
+            observation: Результат наблюдения
+        
+        Returns:
+            Dict с решением или None при ошибке
+        """
+        logger.info("Consulting LLM for next action...")
+        
+        # Build observation message
+        obs_message = f"""Current page state:
+
+{observation['dom']}
+
+Recent actions:
+{self.breadcrumbs.get_summary()}
+
+What should I do next to accomplish the task?
+Remember to include your "thought" explaining your reasoning!
+"""
+        
+        self.llm.add_user_message(obs_message)
+        
+        # Get LLM response
         try:
-            # Get messages
-            messages = self.context_manager.get_messages()
+            response = self.llm.get_completion()
+            logger.debug(f"LLM response: {response}")
             
-            # Call LLM
-            response = self.llm_client.chat(messages, SYSTEM_PROMPT)
-            
-            # Parse response
+            # Parse JSON decision
             decision = self._parse_json(response)
             
             if not decision:
-                logger.error("Failed to parse LLM response")
-                logger.debug(f"Raw response: {response}")
+                logger.error("Failed to parse LLM response as JSON")
                 return None
             
             # Validate decision
@@ -963,120 +1053,188 @@ class AutonomousAgent:
                 logger.error("Invalid decision from LLM")
                 return None
             
-            # Add decision to context
-            self.context_manager.add_message("assistant", json.dumps(decision))
-            
             return decision
         
         except Exception as e:
-            logger.error(f"Thinking error: {e}")
+            logger.error(f"Error getting LLM decision: {e}")
             return None
     
     def _act(self, decision: Dict) -> Dict:
         """
-        Действие: Выполнить решение.
+        ACT: Выполнить действие.
+        
+        Args:
+            decision: Решение от LLM
         
         Returns:
-            {'success': bool, 'message': str}
+            Dict с результатом выполнения
         """
         action_type = decision['action_type']
-        args = decision.get('args', {})
-        element_id = decision.get('element_id')
+        logger.info(f"Executing action: {action_type}")
         
-        try:
-            if action_type == 'click':
-                return self._action_click(element_id)
-            
-            elif action_type == 'type':
-                return self._action_type(element_id, args.get('text', ''))
-            
-            elif action_type == 'select':
-                return self._action_select(element_id, args.get('value', ''))
-            
-            elif action_type == 'scroll':
-                return self._action_scroll(args.get('direction', 'down'))
-            
-            elif action_type == 'navigate':
-                return self._action_navigate(args.get('url', ''))
-            
-            elif action_type == 'wait':
-                return self._action_wait(args.get('seconds', 2))
-            
-            else:
-                return {'success': False, 'message': f"Unknown action: {action_type}"}
+        # Record action in breadcrumbs
+        target = decision.get('element_id', decision.get('args', {}).get('url', 'N/A'))
+        self.breadcrumbs.record_action(action_type, target)
         
-        except Exception as e:
-            logger.error(f"Action execution error: {e}")
-            return {'success': False, 'message': str(e)}
+        # Human-like delay before action
+        delay = random.uniform(self.config.min_action_delay, self.config.max_action_delay)
+        time.sleep(delay)
+        
+        # Execute action
+        if action_type == 'navigate':
+            url = decision.get('args', {}).get('url')
+            return self._action_navigate(url)
+        
+        elif action_type == 'click':
+            element_id = decision.get('element_id')
+            return self._action_click(element_id)
+        
+        elif action_type == 'type':
+            element_id = decision.get('element_id')
+            text = decision.get('args', {}).get('text', '')
+            return self._action_type(element_id, text)
+        
+        elif action_type == 'select':
+            element_id = decision.get('element_id')
+            value = decision.get('args', {}).get('value', '')
+            return self._action_select(element_id, value)
+        
+        elif action_type == 'scroll':
+            direction = decision.get('args', {}).get('direction', 'down')
+            return self._action_scroll(direction)
+        
+        elif action_type == 'wait':
+            seconds = decision.get('args', {}).get('seconds', 2)
+            return self._action_wait(seconds)
+        
+        else:
+            return {'success': False, 'message': f"Unknown action: {action_type}"}
     
-    # Action implementations
+    # Action implementations with human-like behavior
     
     def _action_click(self, element_id: int) -> Dict:
-        """Click an element."""
-        try:
-            element_map = getattr(self.browser, '_current_element_map', {})
-            
-            if element_id not in element_map:
-                return {'success': False, 'message': f"Element {element_id} not found"}
-            
-            element = element_map[element_id]
-            selector = element['selector']
-            
-            # Try regular click
-            try:
-                self.browser.page.click(selector, timeout=self.config.action_timeout)
-            except:
-                # Fallback: JS click
-                self.browser.page.evaluate(f"""
-                    document.querySelector('{selector.replace("'", "\\'")}')?.click()
-                """)
-            
-            time.sleep(1)
-            
-            return {'success': True, 'message': f"Clicked {element['type']}: {element['text'][:50]}"}
+        """
+        Кликнуть на элемент с человекоподобным поведением.
         
-        except Exception as e:
-            return {'success': False, 'message': f"Click failed: {e}"}
-    
-    def _action_type(self, element_id: int, text: str) -> Dict:
-        """Type into an element."""
+        Реализация:
+        1. Найти элемент
+        2. Получить его центр
+        3. Переместить мышь к центру с random jitter
+        4. Кликнуть
+        """
         try:
-            element_map = getattr(self.browser, '_current_element_map', {})
+            element_map = self.browser._current_element_map
             
             if element_id not in element_map:
                 return {'success': False, 'message': f"Element {element_id} not found"}
             
-            element = element_map[element_id]
-            selector = element['selector']
+            element_data = element_map[element_id]
+            selector = element_data['selector']
             
-            # Clear and type
-            self.browser.page.fill(selector, '', timeout=self.config.action_timeout)
-            self.browser.page.type(
-                selector,
-                text,
-                timeout=self.config.action_timeout,
-                delay=self.config.typing_delay
+            logger.debug(f"Clicking element: {selector}")
+            
+            # Find element
+            locator = self.browser.page.locator(selector).first
+            
+            # Get element's bounding box
+            box = locator.bounding_box()
+            if not box:
+                return {'success': False, 'message': "Element not visible"}
+            
+            # Calculate center with random jitter
+            center_x = box['x'] + box['width'] / 2
+            center_y = box['y'] + box['height'] / 2
+            
+            # Add small random offset (±5 pixels)
+            jitter_x = random.uniform(-5, 5)
+            jitter_y = random.uniform(-5, 5)
+            
+            target_x = center_x + jitter_x
+            target_y = center_y + jitter_y
+            
+            # HUMAN-LIKE: Move mouse gradually
+            self.browser.page.mouse.move(
+                target_x, 
+                target_y, 
+                steps=self.config.mouse_move_steps
             )
             
-            time.sleep(0.5)
+            # Small pause before click
+            time.sleep(random.uniform(0.1, 0.3))
             
-            return {'success': True, 'message': f"Typed '{text[:30]}...' into {element['type']}"}
+            # Click
+            self.browser.page.mouse.click(target_x, target_y)
+            
+            # Wait for potential navigation/changes
+            time.sleep(1)
+            
+            return {'success': True, 'message': f"Clicked element {element_id}"}
         
         except Exception as e:
-            return {'success': False, 'message': f"Type failed: {e}"}
+            logger.error(f"Click failed: {e}")
+            return {'success': False, 'message': f"Click error: {e}"}
     
-    def _action_select(self, element_id: int, value: str) -> Dict:
-        """Select dropdown option."""
+    def _action_type(self, element_id: int, text: str) -> Dict:
+        """
+        Ввести текст с человекоподобной скоростью.
+        
+        Реализация:
+        1. Найти элемент
+        2. Кликнуть на него (фокус)
+        3. Ввести текст посимвольно с задержкой
+        """
         try:
-            element_map = getattr(self.browser, '_current_element_map', {})
+            element_map = self.browser._current_element_map
             
             if element_id not in element_map:
                 return {'success': False, 'message': f"Element {element_id} not found"}
             
-            element = element_map[element_id]
-            selector = element['selector']
+            element_data = element_map[element_id]
+            selector = element_data['selector']
             
-            self.browser.page.select_option(selector, value, timeout=self.config.action_timeout)
+            logger.debug(f"Typing into element: {selector}")
+            
+            # Find and click element (to focus)
+            locator = self.browser.page.locator(selector).first
+            locator.click()
+            
+            # Clear existing text
+            locator.fill('')
+            
+            # HUMAN-LIKE: Type with random delay between characters
+            for char in text:
+                self.browser.page.keyboard.type(char)
+                delay = random.uniform(
+                    self.config.typing_delay_min, 
+                    self.config.typing_delay_max
+                )
+                time.sleep(delay / 1000)  # Convert ms to seconds
+            
+            # Small pause after typing
+            time.sleep(0.5)
+            
+            return {'success': True, 'message': f"Typed '{text}' into element {element_id}"}
+        
+        except Exception as e:
+            logger.error(f"Type failed: {e}")
+            return {'success': False, 'message': f"Type error: {e}"}
+    
+    def _action_select(self, element_id: int, value: str) -> Dict:
+        """Выбрать опцию в select."""
+        try:
+            element_map = self.browser._current_element_map
+            
+            if element_id not in element_map:
+                return {'success': False, 'message': f"Element {element_id} not found"}
+            
+            element_data = element_map[element_id]
+            selector = element_data['selector']
+            
+            logger.debug(f"Selecting '{value}' in: {selector}")
+            
+            # Select option
+            locator = self.browser.page.locator(selector).first
+            locator.select_option(value)
             
             time.sleep(0.5)
             
@@ -1086,7 +1244,7 @@ class AutonomousAgent:
             return {'success': False, 'message': f"Select failed: {e}"}
     
     def _action_scroll(self, direction: str) -> Dict:
-        """Scroll the page."""
+        """Прокрутить страницу."""
         try:
             if direction == 'down':
                 self.browser.page.evaluate("window.scrollBy(0, window.innerHeight)")
@@ -1101,7 +1259,7 @@ class AutonomousAgent:
             return {'success': False, 'message': f"Scroll failed: {e}"}
     
     def _action_navigate(self, url: str) -> Dict:
-        """Navigate to URL."""
+        """Перейти по URL."""
         try:
             success = self.browser.navigate(url)
             
@@ -1114,7 +1272,7 @@ class AutonomousAgent:
             return {'success': False, 'message': f"Navigate error: {e}"}
     
     def _action_wait(self, seconds: int) -> Dict:
-        """Wait for specified seconds."""
+        """Подождать указанное количество секунд."""
         try:
             time.sleep(int(seconds))
             return {'success': True, 'message': f"Waited {seconds}s"}
@@ -1125,7 +1283,7 @@ class AutonomousAgent:
     # Utility methods
     
     def _parse_json(self, response: str) -> Optional[Dict]:
-        """Parse JSON from LLM response (robust)."""
+        """Распарсить JSON из ответа LLM (с устойчивостью к ошибкам)."""
         try:
             # Clean markdown
             response = response.strip()
@@ -1185,7 +1343,7 @@ class AutonomousAgent:
             return None
     
     def _validate_decision(self, decision: Dict) -> bool:
-        """Validate decision from LLM."""
+        """Валидировать решение от LLM."""
         # Check required fields
         if 'action_type' not in decision:
             logger.error("Missing action_type")
@@ -1211,6 +1369,47 @@ class AutonomousAgent:
                 return False
         
         return True
+    
+    def _save_final_report(self):
+        """
+        GRACEFUL DEGENERACY: Сохранить финальный отчет о выполнении задачи.
+        """
+        try:
+            reports_dir = Path("./reports")
+            reports_dir.mkdir(exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = reports_dir / f"task_report_{timestamp}.md"
+            
+            # Build report content
+            report_lines = [
+                f"# Task Execution Report",
+                f"",
+                f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"**Task:** {self.task}",
+                f"**Status:** {'✓ COMPLETED' if self.task_completed else '✗ FAILED'}",
+                f"**Steps Taken:** {self.step_count}/{self.config.max_steps}",
+                f"",
+                f"## Execution Log",
+                f""
+            ]
+            
+            for i, entry in enumerate(self.task_report, 1):
+                report_lines.append(f"{i}. {entry}")
+            
+            report_lines.append(f"")
+            report_lines.append(f"## Final State")
+            report_lines.append(f"- URL: {self.browser.page.url if self.browser.page else 'N/A'}")
+            report_lines.append(f"- Title: {self.browser.page.title() if self.browser.page else 'N/A'}")
+            
+            # Write report
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(report_lines))
+            
+            logger.info(f"✓ Task report saved: {report_path}")
+        
+        except Exception as e:
+            logger.error(f"Failed to save report: {e}")
 
 
 # ============================================================================
@@ -1218,9 +1417,9 @@ class AutonomousAgent:
 # ============================================================================
 
 def main():
-    """Main entry point."""
+    """Главная точка входа."""
     print("\n" + "="*70)
-    print("   COGNIWEB AGENT v3.0 - FULLY AUTONOMOUS")
+    print("   COGNIWEB AGENT v3.5 - FULLY AUTONOMOUS")
     print("="*70 + "\n")
     
     try:
@@ -1243,7 +1442,8 @@ def main():
         print("No task provided. Using demo task...")
         task = "Go to google.com and search for 'autonomous web agents'"
     
-    starting_url = input("🌐 Enter starting URL (optional): ").strip() or None
+    # ZERO-TOUCH UX: Убрать запрос URL, агент начнет с about:blank
+    starting_url = None
     
     print("-"*70 + "\n")
     
