@@ -12,6 +12,7 @@ cookies.json
 *.auth
 
 # Browser data & Stealth
+agent_profile/
 browser_data/
 .auth/
 user_data/

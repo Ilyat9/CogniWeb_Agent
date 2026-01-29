@@ -63,7 +63,7 @@ class Config:
     headless: bool = False
     
     # Agent Configuration
-    max_steps: int = 20  # Увеличено для медленных условий
+    max_steps: int = 25  # Увеличено для медленных условий
     page_load_timeout: int = 90000  # 90 секунд (было 60)
     action_timeout: int = 60000     # 30 секунд (было 20)
     
@@ -75,8 +75,8 @@ class Config:
     http_timeout: float = 120.0  # 2 минуты
     
     # Human-like delays (анти-бот)
-    min_action_delay: float = 1.5  # Минимальная пауза между действиями
-    max_action_delay: float = 3.0  # Максимальная пауза
+    min_action_delay: float = 5.0  # Минимальная пауза между действиями
+    max_action_delay: float = 20.0  # Максимальная пауза
     typing_delay: int = 150  # Задержка между нажатиями клавиш (мс)
     
     # Retry settings
@@ -424,7 +424,7 @@ class PageProcessor:
                     secondary_elements.append(a_tag)
             
             # Формируем финальный список: сначала приоритетные, потом дополняем ссылками
-            MAX_ELEMENTS = 150
+            MAX_ELEMENTS = 500
             final_elements = priority_elements[:MAX_ELEMENTS]
             
             if len(final_elements) < MAX_ELEMENTS:
@@ -654,12 +654,13 @@ class BrowserManager:
             
             # Launch persistent context (сохраняет cookies между запусками)
             self.context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=self.config.user_data_dir,
+                
+                user_data_dir = "/home/vboxuser/projects/CogniWeb_Agent/agent_profile",
                 headless=self.config.headless,
                 args=browser_args,
                 proxy=proxy_settings,
                 viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                user_agent='Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0',
             )
             
             # Set default timeouts
@@ -758,7 +759,7 @@ class Agent:
             
             conversation_history = []
             retry_delay = 1.0  # Начальная задержка для бэкоффа
-            max_retry_delay = 60.0  # Максимальная задержка
+            max_retry_delay = 40.0  # Максимальная задержка
             
             for step in range(self.config.max_steps):
                 logger.info(f"\n--- Step {step + 1}/{self.config.max_steps} ---")
