@@ -1,29 +1,223 @@
+# ============================================================================
 # Python
+# ============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 .venv/
 
-# Environment & Secrets (КРИТИЧНО)
-.env
-cookies.json
-*.session
-*.auth
-
-# Browser data & Stealth
-agent_profile/
-browser_data/
-.auth/
-user_data/
-
-# Logs & Debug
-*.log
-reports/
-screenshots/
-network_traces/
+# ============================================================================
+# Testing
+# ============================================================================
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.hypothesis/
+coverage.xml
+test_screenshots/
+test_data/
+*.test.html
 
-# OS
+# ============================================================================
+# Type checking / Linting
+# ============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+pyrightconfig.json
+
+# ============================================================================
+# IDEs
+# ============================================================================
+# PyCharm
+.idea/
+*.iml
+*.iws
+.idea_modules/
+
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# Rope
+.ropeproject
+
+# Project specific
+*.pydevproject
+.project
+.settings/
+
+# ============================================================================
+# Jupyter
+# ============================================================================
+.ipynb_checkpoints
+*.ipynb
+
+# ============================================================================
+# Logs
+# ============================================================================
+*.log
+logs/
+agent.log
+debug.log
+
+# ============================================================================
+# Environment & Secrets
+# ============================================================================
+.env
+.env.local
+.env.*.local
+secrets/
+.secrets/
+credentials.json
+*.credentials
+api_keys.txt
+tokens.txt
+passwords.txt
+*.pem
+*.key
+*.crt
+*.cert
+
+# ============================================================================
+# Browser & Playwright
+# ============================================================================
+# Persistent browser data
+browser_data/
+playwright-state/
+.playwright/
+
+# Screenshots and error snapshots
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+error_*.html
+
+# ============================================================================
+# Database
+# ============================================================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================================================
+# OS Specific
+# ============================================================================
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
 Thumbs.db
+
+# Windows
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.Trash-*
+.nfs*
+
+# ============================================================================
+# Temporary & Backup
+# ============================================================================
+*.bak
+*.backup
+*.old
+*.orig
+*.tmp
+*.swp
+*.swo
+*~
+tmp/
+temp/
+
+# ============================================================================
+# Cache
+# ============================================================================
+.cache/
+*.cache
+__cache__/
+
+# ============================================================================
+# Package Managers
+# ============================================================================
+node_modules/
+package-lock.json
+yarn.lock
+
+# ============================================================================
+# Build Artifacts
+# ============================================================================
+*.tar.gz
+*.zip
+*.whl
+*.com
+*.class
+*.dll
+*.exe
+*.o
+
+# ============================================================================
+# Documentation
+# ============================================================================
+docs/_build/
+docs/.doctrees/
+site/
+
+# ============================================================================
+# Profiling
+# ============================================================================
+*.prof
+*.lprof
+
+# ============================================================================
+# User & Local Config
+# ============================================================================
+.user
+*.user
+local_settings.py
+config.local.py
