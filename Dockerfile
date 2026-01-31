@@ -34,8 +34,8 @@ FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 # Создание не-root пользователя для безопасности
 ARG USER_ID=1000
 ARG GROUP_ID=1000
-RUN groupadd -g ${GROUP_ID} agentuser && \
-    useradd -m -u ${USER_ID} -g agentuser agentuser
+RUN groupadd agentuser && \
+    useradd -m -g agentuser agentuser
 
 # Установка только runtime зависимостей
 RUN apt-get update && apt-get install -y --no-install-recommends \
