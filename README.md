@@ -149,6 +149,10 @@ URL: https://news.ycombinator.com
 │       ├── dom.py               # DOM tree shaking и оптимизация
 │       └── __init__.py
 │
+├── tests/
+│   ├── __init__.py              # Unit-тесты (Pytest)
+│   └── test_agent_core.py
+│ 
 ├── browser_data/                # Persistent browser session (создаётся при запуске)
 ├── screenshots/                 # Error snapshots (создаётся при запуске)
 ├── agent.log                    # Лог файл (создаётся при запуске)
