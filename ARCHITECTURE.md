@@ -564,38 +564,265 @@ async def run_parallel_agents(tasks: List[str]):
 
 ## Тестирование
 
-### Unit Tests
+Проект покрыт Unit-тестами с использованием `pytest` и `pytest-asyncio`. Все внешние зависимости (LLM, Browser) изолированы через моки для обеспечения быстрого и надёжного тестирования без реальных API вызовов.
 
-**Мокирование зависимостей**:
+### Стратегия тестирования
+
+**Принципы**:
+- **Изоляция**: Все I/O операции (LLM API, браузер) мокируются через `AsyncMock`
+- **Dependency Injection**: Позволяет легко подменять реальные сервисы на моки
+- **Fast execution**: Тесты выполняются за <1 секунду без внешних зависимостей
+- **High coverage**: Покрытие критичных компонентов (валидация, оркестрация, loop detection)
+
+### Тестируемые компоненты
+
+**1. Pydantic Validation (`models.py`)**:
 ```python
-@pytest.mark.asyncio
-async def test_orchestrator():
-    browser = AsyncMock(BrowserService)
-    llm = AsyncMock(LLMService)
-    settings = Settings(api_key="test")
-    
-    orchestrator = AgentOrchestrator(settings, browser, llm)
-    
-    # Test loop detection
-    for _ in range(6):
-        orchestrator._check_for_loops(
-            action=AgentAction(...),
-            result=ActionResult(success=False)
+def test_valid_action():
+    """Valid action should parse without errors."""
+    action = AgentAction(
+        thought="Navigate to example",
+        tool="navigate",
+        args={"url": "https://example.com"}
+    )
+    assert action.tool == "navigate"
+
+def test_invalid_tool_name():
+    """Invalid tool name should raise ValidationError."""
+    with pytest.raises(ValidationError):
+        AgentAction(
+            thought="Invalid tool",
+            tool="invalid_tool_name",
+            args={}
         )
-    # Should raise LoopDetectedError
 ```
 
-### Integration Tests
-
-**С реальным браузером**:
+**2. Orchestrator Logic (`orchestrator.py`)**:
 ```python
 @pytest.mark.asyncio
+async def test_get_trimmed_history_preserves_system_prompt():
+    """System prompt (index 0) must always be preserved."""
+    orchestrator = AgentOrchestrator(mock_settings, mock_browser, mock_llm)
+    
+    # Simulate conversation with 15 messages
+    orchestrator.conversation_history = [
+        {"role": "system", "content": "SYSTEM_PROMPT"},
+        {"role": "user", "content": "msg1"},
+        # ... more messages
+    ]
+    
+    trimmed = orchestrator.get_trimmed_history(window_size=5)
+    
+    # Should have: system prompt + last 5 messages = 6 total
+    assert len(trimmed) == 6
+    assert trimmed[0]["role"] == "system"
+```
+
+**3. LLM JSON Parsing (`llm.py`)**:
+```python
+def test_extract_json_from_code_block():
+    """Should extract JSON from markdown code block."""
+    llm = LLMService(mock_settings)
+    
+    response = """
+    Here's the action:
+```json
+    {"tool": "navigate", "args": {"url": "https://example.com"}}
+```
+    """
+    
+    result = llm._extract_json_from_response(response)
+    assert result == '{"tool": "navigate", "args": {"url": "https://example.com"}}'
+```
+
+**4. Smart Loop Detection (`orchestrator.py`)** — критически важная защита от зацикливания:
+
+**Проблема**: Агент может попасть в бесконечный цикл, повторяя одно и то же неуспешное действие.
+
+**Решение**: Детекция последовательных идентичных неудачных действий с анализом триплета `(tool, target, success)`.
+
+**Тестирование защиты от зацикливания**:
+
+```python
+@pytest.mark.asyncio
+async def test_loop_detected_on_identical_failures(
+    mock_settings, mock_browser, mock_llm
+):
+    """Should raise LoopDetectedError on 3 identical failures.
+    
+    Critical test: Validates that agent detects when it's stuck
+    trying the same action on the same target repeatedly.
+    """
+    orchestrator = AgentOrchestrator(mock_settings, mock_browser, mock_llm)
+    
+    # Create identical action (same tool + same target)
+    action = AgentAction(
+        thought="Click button",
+        tool="click_element",
+        args={"element_id": 42}  # Target = element #42
+    )
+    
+    # Failed result
+    result = ActionResult(success=False, message="Element not found")
+    
+    # First attempt - no error expected
+    orchestrator._check_for_loops(action, result)
+    
+    # Second attempt - still no error
+    orchestrator._check_for_loops(action, result)
+    
+    # Third identical failure - should raise LoopDetectedError
+    with pytest.raises(LoopDetectedError) as exc_info:
+        orchestrator._check_for_loops(action, result)
+    
+    # Verify error message indicates being stuck
+    assert "stuck" in str(exc_info.value).lower()
+```
+
+**Важные детали loop detection**:
+- Проверяется последовательность из **3 итераций** (настраиваемо через `loop_detection_window`)
+- Учитывается не только `tool`, но и **target** (`element_id`, `url`)
+- Срабатывает только на **failed actions** (`success=False`)
+- Разные targets НЕ считаются циклом (агент пробует разные элементы)
+
+**Дополнительные тесты loop detection**:
+
+```python
+@pytest.mark.asyncio
+async def test_no_loop_on_different_targets():
+    """Should NOT raise loop if targets are different."""
+    orchestrator = AgentOrchestrator(mock_settings, mock_browser, mock_llm)
+    
+    # Different element IDs - NOT a loop
+    action1 = AgentAction(tool="click_element", args={"element_id": 1})
+    action2 = AgentAction(tool="click_element", args={"element_id": 2})
+    action3 = AgentAction(tool="click_element", args={"element_id": 3})
+    
+    result = ActionResult(success=False, message="Failed")
+    
+    # Should NOT raise - agent is trying different elements
+    orchestrator._check_for_loops(action1, result)
+    orchestrator._check_for_loops(action2, result)
+    orchestrator._check_for_loops(action3, result)
+
+@pytest.mark.asyncio
+async def test_no_loop_on_successes():
+    """Should NOT raise loop if actions succeed."""
+    orchestrator = AgentOrchestrator(mock_settings, mock_browser, mock_llm)
+    
+    action = AgentAction(tool="click_element", args={"element_id": 42})
+    result = ActionResult(success=True, message="Clicked")
+    
+    # Should NOT raise - successful actions are fine
+    orchestrator._check_for_loops(action, result)
+    orchestrator._check_for_loops(action, result)
+    orchestrator._check_for_loops(action, result)
+```
+
+### Mock Fixtures
+
+**Использование AsyncMock для асинхронных сервисов**:
+
+```python
+@pytest.fixture
+def mock_browser():
+    """Create mock browser service."""
+    browser = AsyncMock()
+    browser.element_map = {}
+    browser.navigate = AsyncMock(return_value=ActionResult(
+        success=True, 
+        message="Navigated"
+    ))
+    browser.click_element_safe = AsyncMock(return_value=ActionResult(
+        success=True, 
+        message="Clicked"
+    ))
+    browser.get_current_url = AsyncMock(return_value="https://example.com")
+    browser.detect_captcha = AsyncMock(return_value=False)
+    return browser
+
+@pytest.fixture
+def mock_llm():
+    """Create mock LLM service."""
+    llm = AsyncMock()
+    llm.generate_action = AsyncMock(return_value=AgentAction(
+        thought="Test thought",
+        tool="navigate",
+        args={"url": "https://example.com"}
+    ))
+    return llm
+
+@pytest.fixture
+def mock_settings():
+    """Create mock settings for testing."""
+    return Settings(
+        api_key="sk-test-key-not-real",
+        api_base_url="https://api.test.com/v1",
+        model_name="test-model",
+        max_steps=50,
+        loop_detection_window=3,
+        max_identical_states=3
+    )
+```
+
+### Запуск тестов
+
+```bash
+# Все тесты с подробным выводом
+pytest tests/test_agent_core.py -v
+
+# Только тесты loop detection
+pytest tests/test_agent_core.py::TestSmartLoopDetection -v
+
+# С coverage report
+pytest tests/test_agent_core.py --cov=src --cov-report=term-missing
+```
+
+### Будущие улучшения тестирования
+
+**Integration tests с реальным браузером**:
+```python
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_browser_navigation():
+    """Test with real Playwright browser."""
     settings = Settings(api_key="test")
     async with BrowserService(settings) as browser:
         result = await browser.navigate("https://example.com")
         assert result.success
-        assert await browser.get_current_url() == "https://example.com/"
+        assert "example.com" in await browser.get_current_url()
+```
+
+**Property-based testing** (hypothesis):
+```python
+from hypothesis import given, strategies as st
+
+@given(st.text(min_size=1, max_size=100))
+def test_dom_processor_handles_any_text(text):
+    """DOM processor should handle arbitrary text inputs."""
+    processor = DOMProcessor()
+    result = processor.simplify_dom(f"<div>{text}</div>")
+    assert result is not None
+```
+
+**E2E smoke tests**:
+```python
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_full_agent_run():
+    """End-to-end test: agent completes simple task."""
+    settings = load_settings()
+    async with BrowserService(settings) as browser:
+        llm = LLMService(settings)
+        orchestrator = AgentOrchestrator(settings, browser, llm)
+        
+        result = await orchestrator.run(
+            task="Navigate to example.com and save page title",
+            starting_url="https://example.com"
+        )
+        
+        assert result.success
+        assert result.steps_taken > 0
 ```
 
 ## Метрики и мониторинг
