@@ -1,0 +1,19 @@
+# Development dependencies (не нужны в production Docker)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-watch>=4.2.0
+
+# Code quality
+ruff>=0.1.0
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.5.0
+
+# Security
+bandit>=1.7.5
+safety>=2.3.5
+
+# Build tools
+pip-tools>=7.3.0
+wheel>=0.41.0
