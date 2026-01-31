@@ -410,27 +410,36 @@ Always think step-by-step and explain your reasoning."""
                     message="click_element requires 'element_id' parameter",
                     error="MissingElementId"
                 )
-            elif not isinstance(element_id, int):
-                result = ActionResult(
-                    success=False,
-                    message=f"element_id must be integer, got {type(element_id).__name__}",
-                    error="InvalidType"
-                )
+            # elif not isinstance(element_id, int):
+                # result = ActionResult(
+                  #  success=False,
+                   # message=f"element_id must be integer, got {type(element_id).__name__}",
+                   # error="InvalidType"
+                #)
             else:
                 # FIXED: Validate element_id exists in current map
-                if element_id not in self.browser.element_map:
-                    result = self._get_invalid_element_error(element_id)
-                else:
-                    result = await self.browser.click_element_safe(element_id)
-                    print(f"🖱️  Clicked element {element_id}")
+                try:
+                    # 2. Пытаемся превратить в int (съест и 1, и "1")
+                    element_id = int(element_id)
+                    if element_id not in self.browser.element_map:
+                        result = self._get_invalid_element_error(element_id)
+                    else:
+                        result = await self.browser.click_element_safe(element_id)
+                        print(f"🖱️  Clicked element {element_id}")
 
-                    new_obs = await self._get_observation()
-                    self.previous_observation = new_obs
+                        new_obs = await self._get_observation()
+                        self.previous_observation = new_obs
+                except (ValueError, TypeError):
+                    result = ActionResult(
+                        success=False,
+                        message=f"element_id must be numeric, got {type(element_id).__name__}: {element_id}",
+                        error="InvalidType"
+                    )
         
         elif tool == "type_text":
             element_id = args.get("element_id")
             text = args.get("text", "")
-            press_enter = args.get("press_enter", False)
+            press_enter = str(args.get("press_enter", "False")).lower() == "true"
             
             if element_id is None:
                 result = ActionResult(
@@ -438,6 +447,7 @@ Always think step-by-step and explain your reasoning."""
                     message="type_text requires 'element_id' parameter",
                     error="MissingElementId"
                 )
+            
             elif not isinstance(element_id, int):
                 result = ActionResult(
                     success=False,
@@ -452,11 +462,19 @@ Always think step-by-step and explain your reasoning."""
                 )
             else:
                 # FIXED: Validate element_id exists in current map
-                if element_id not in self.browser.element_map:
-                    result = self._get_invalid_element_error(element_id)
-                else:
-                    result = await self.browser.type_text(element_id, text, press_enter)
-                    print(f"⌨️  Typed into element {element_id}")
+                try:
+                    element_id = int(element_id)
+                    if element_id not in self.browser.element_map:
+                        result = self._get_invalid_element_error(element_id)
+                    else:
+                        result = await self.browser.type_text(element_id, text, press_enter)
+                        print(f"⌨️  Typed into element {element_id}")
+                except (ValueError, TypeError):
+                    result = ActionResult(
+                        success=False,
+                        message=f"element_id must be numeric, got {type(element_id_raw).__name__}",
+                        error="InvalidType"
+                    )
         
         elif tool == "select_option":
             element_id = args.get("element_id")

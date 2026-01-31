@@ -111,6 +111,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_model_name(cls, v: str) -> str:
         """Validate model name format."""
+        if not v or len(v) < 2:
+            raise ValueError("MODEL_NAME cannot be empty")
         # Check for Ollama models
         ollama_patterns = ["llama3:", "mistral:", "codellama:", "phi3:"]
         for pattern in ollama_patterns:
@@ -122,11 +124,11 @@ class Settings(BaseSettings):
                 )
         
         # Validate format (provider/model) unless legacy OpenAI
-        if "/" not in v and v not in ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini"]:
-            raise ValueError(
-                f"Invalid model format: {v}\n"
-                "Use: provider/model:version"
-            )
+        # if "/" not in v and v not in ["gpt-4", "gpt-3.5-turbo", "gpt-4o-mini"]:
+         #   raise ValueError(
+             #   f"Invalid model format: {v}\n"
+             #   "Use: provider/model:version"
+          #  )
         
         return v
     

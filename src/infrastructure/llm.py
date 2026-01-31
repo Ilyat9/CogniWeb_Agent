@@ -71,6 +71,7 @@ class LLMService:
                     temperature=temperature,
                     max_tokens=self.settings.max_tokens
                 )
+                
             except httpx.TimeoutException as e:
                 raise NetworkError(f"Timeout connecting to LLM: {e}") from e
             except Exception as e:
@@ -79,7 +80,14 @@ class LLMService:
             
             self._connection_verified = True
             
-            content = response.choices[0].message.content
+            # content = response.choices[0].message.content
+
+            choices = getattr(response, 'choices', [])
+            if not choices:
+                logger.warning(f"Model {self.settings.model_name} returned response without choices")
+                content = None
+            else:
+                content = choices[0].message.content
 
             if not content or not content.strip():
                 print(f"[WARNING] Model {self.settings.model_name} returned empty response")
