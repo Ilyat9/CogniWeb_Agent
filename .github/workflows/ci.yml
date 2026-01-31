@@ -104,7 +104,7 @@ jobs:
           MODEL_NAME: "test-model"
           HEADLESS: "true"
         run: |
-          pytest tests/ \
+          python -m pytest tests/ \
             -v \
             --tb=short \
             --maxfail=3 \
