@@ -38,8 +38,8 @@ src/
 
 ```bash
 # 1. Клонировать и установить зависимости
-git clone <repo-url>
-cd refactored_agent
+git clone <https://github.com/Ilyat9/CogniWeb_Agent>
+cd CogniWeb_Agent>
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
