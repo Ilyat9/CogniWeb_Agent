@@ -49,7 +49,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Установка Playwright браузеров (только Chromium для оптимизации размера)
 # Используем --with-deps для системных зависимостей
-RUN playwright install --with-deps chromium
+RUN python3 -m playwright install --with-deps chromium
 
 # Создание рабочей директории
 WORKDIR /app
