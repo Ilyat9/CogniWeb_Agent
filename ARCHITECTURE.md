@@ -577,7 +577,7 @@ async def run_parallel_agents(tasks: List[str]):
 ### Тестируемые компоненты
 
 **1. Pydantic Validation (`models.py`)**:
-```python
+````python
 def test_valid_action():
     """Valid action should parse without errors."""
     action = AgentAction(
@@ -595,10 +595,10 @@ def test_invalid_tool_name():
             tool="invalid_tool_name",
             args={}
         )
-```
+````
 
 **2. Orchestrator Logic (`orchestrator.py`)**:
-```python
+````python
 @pytest.mark.asyncio
 async def test_get_trimmed_history_preserves_system_prompt():
     """System prompt (index 0) must always be preserved."""
@@ -616,10 +616,10 @@ async def test_get_trimmed_history_preserves_system_prompt():
     # Should have: system prompt + last 5 messages = 6 total
     assert len(trimmed) == 6
     assert trimmed[0]["role"] == "system"
-```
+````
 
 **3. LLM JSON Parsing (`llm.py`)**:
-```python
+````python
 def test_extract_json_from_code_block():
     """Should extract JSON from markdown code block."""
     llm = LLMService(mock_settings)
@@ -633,7 +633,7 @@ def test_extract_json_from_code_block():
     
     result = llm._extract_json_from_response(response)
     assert result == '{"tool": "navigate", "args": {"url": "https://example.com"}}'
-```
+````
 
 **4. Smart Loop Detection (`orchestrator.py`)** — критически важная защита от зацикливания:
 
@@ -642,8 +642,7 @@ def test_extract_json_from_code_block():
 **Решение**: Детекция последовательных идентичных неудачных действий с анализом триплета `(tool, target, success)`.
 
 **Тестирование защиты от зацикливания**:
-
-```python
+````python
 @pytest.mark.asyncio
 async def test_loop_detected_on_identical_failures(
     mock_settings, mock_browser, mock_llm
@@ -677,7 +676,7 @@ async def test_loop_detected_on_identical_failures(
     
     # Verify error message indicates being stuck
     assert "stuck" in str(exc_info.value).lower()
-```
+````
 
 **Важные детали loop detection**:
 - Проверяется последовательность из **3 итераций** (настраиваемо через `loop_detection_window`)
@@ -686,8 +685,7 @@ async def test_loop_detected_on_identical_failures(
 - Разные targets НЕ считаются циклом (агент пробует разные элементы)
 
 **Дополнительные тесты loop detection**:
-
-```python
+````python
 @pytest.mark.asyncio
 async def test_no_loop_on_different_targets():
     """Should NOT raise loop if targets are different."""
@@ -717,13 +715,12 @@ async def test_no_loop_on_successes():
     orchestrator._check_for_loops(action, result)
     orchestrator._check_for_loops(action, result)
     orchestrator._check_for_loops(action, result)
-```
+````
 
 ### Mock Fixtures
 
 **Использование AsyncMock для асинхронных сервисов**:
-
-```python
+````python
 @pytest.fixture
 def mock_browser():
     """Create mock browser service."""
@@ -763,11 +760,10 @@ def mock_settings():
         loop_detection_window=3,
         max_identical_states=3
     )
-```
+````
 
 ### Запуск тестов
-
-```bash
+````bash
 # Все тесты с подробным выводом
 pytest tests/test_agent_core.py -v
 
@@ -776,12 +772,12 @@ pytest tests/test_agent_core.py::TestSmartLoopDetection -v
 
 # С coverage report
 pytest tests/test_agent_core.py --cov=src --cov-report=term-missing
-```
+````
 
 ### Будущие улучшения тестирования
 
 **Integration tests с реальным браузером**:
-```python
+````python
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_browser_navigation():
@@ -791,10 +787,10 @@ async def test_browser_navigation():
         result = await browser.navigate("https://example.com")
         assert result.success
         assert "example.com" in await browser.get_current_url()
-```
+````
 
 **Property-based testing** (hypothesis):
-```python
+````python
 from hypothesis import given, strategies as st
 
 @given(st.text(min_size=1, max_size=100))
@@ -803,10 +799,10 @@ def test_dom_processor_handles_any_text(text):
     processor = DOMProcessor()
     result = processor.simplify_dom(f"<div>{text}</div>")
     assert result is not None
-```
+````
 
 **E2E smoke tests**:
-```python
+````python
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_full_agent_run():
@@ -823,7 +819,7 @@ async def test_full_agent_run():
         
         assert result.success
         assert result.steps_taken > 0
-```
+````
 
 ## Метрики и мониторинг
 
