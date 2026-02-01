@@ -113,7 +113,7 @@ src/
 
 ## The ReAct Toolset
 
-Agent can call 12 tools via `AgentAction` model:
+Agent can call 11 tools via `AgentAction` model:
 1. `navigate(url)` - Navigate to URL
 2. `click_element(element_id)` - Click element
 3. `type_text(element_id, text, press_enter)` - Type text
