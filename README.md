@@ -7,6 +7,9 @@
 
 Production-ready веб-агент с архитектурой **ReAct** (Reasoning + Acting), реализующий автономную навигацию и взаимодействие с веб-сайтами через LLM-управляемую автоматизацию браузера.
 
+> [!IMPORTANT]
+> **[Прочитать Self-Review: Архитектурные решения и компромиссы](./SELF_REVIEW.md)** — обязательный документ для понимания логики работы агента в условиях ограниченных ресурсов (API free tier, лимиты контекста).
+
 <p align="center">
   <img src="assets/demo-teaser.gif" alt="CogniWeb Agent Quick Demo" width="800">
 </p>
