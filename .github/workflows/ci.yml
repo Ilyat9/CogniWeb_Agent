@@ -45,15 +45,12 @@ jobs:
       
       - name: Run ruff (fast linter)
         run: ruff check src/ tests/
-        continue-on-error: true
-      
+
       - name: Check code formatting (black)
         run: black --check src/ tests/
-        continue-on-error: true
-      
+
       - name: Check import sorting (isort)
         run: isort --check-only src/ tests/
-        continue-on-error: true
 
   # ==========================================================================
   # JOB 2: Unit Tests
@@ -203,7 +200,7 @@ jobs:
       
       - name: Test Docker image
         run: |
-          docker run --rm cogniweb-agent:${{ github.sha }} --version || true
+          docker run --rm cogniweb-agent:${{ github.sha }} --version
 
   # ==========================================================================
   # JOB 5: Notify on Success/Failure
@@ -217,8 +214,29 @@ jobs:
     steps:
       - name: Check job results
         run: |
+          # FIX: previously this only inspected needs.test.result, so a
+          # failing lint, security, or docker job was silently ignored and
+          # the workflow could still report success overall. Now every
+          # upstream job's result is checked explicitly.
+          failed=0
+          if [[ "${{ needs.lint.result }}" == "failure" ]]; then
+            echo "Lint failed!"
+            failed=1
+          fi
           if [[ "${{ needs.test.result }}" == "failure" ]]; then
             echo "Tests failed!"
+            failed=1
+          fi
+          if [[ "${{ needs.security.result }}" == "failure" ]]; then
+            echo "Security scan failed!"
+            failed=1
+          fi
+          if [[ "${{ needs.docker.result }}" == "failure" ]]; then
+            echo "Docker build failed!"
+            failed=1
+          fi
+
+          if [[ "$failed" == "1" ]]; then
             exit 1
           fi
           echo "All checks passed!"
