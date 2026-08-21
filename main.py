@@ -16,6 +16,8 @@ import sys
 import logging
 from pathlib import Path
 
+from pydantic import ValidationError as PydanticValidationError
+
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
@@ -81,10 +83,26 @@ async def main() -> int:
         print(f"   Model: {settings.model_name}")
         print(f"   Max Steps: {settings.max_steps}")
         print(f"   Stealth: {'Enabled' if settings.enable_stealth else 'Disabled'}")
-        
+
     except ConfigurationError as e:
         logger.error(f"Configuration Error: {e}")
         print(f"❌ Configuration Error: {e}")
+        return 1
+
+    except PydanticValidationError as e:
+        # FIX (5.4 Critical): Settings() raises pydantic_core.ValidationError
+        # directly (e.g. missing OPENAI_API_KEY), never the project's own
+        # ConfigurationError - so the except-branch above never fired on the
+        # single most common startup failure, and the user saw a raw
+        # Pydantic traceback instead of the friendly message the
+        # field_validator's error text promises. Translate it here so the
+        # user always gets an actionable message.
+        logger.error(f"Configuration Error: {e}")
+        print("❌ Configuration Error: invalid or missing settings.\n")
+        for err in e.errors():
+            loc = ".".join(str(part) for part in err.get("loc", ()))
+            print(f"   - {loc}: {err.get('msg')}")
+        print("\nCheck your .env file (see .env.example) and try again.")
         return 1
     
     # Get task from user
@@ -108,10 +126,31 @@ async def main() -> int:
             print("✅ Browser launched\n")
             
             # Create orchestrator
-            orchestrator = AgentOrchestrator(settings, browser, llm)
-            
-            # Run task
-            result = await orchestrator.run(task, starting_url)
+            # FIX (3.1 Major): pass the shutdown flag in so the reasoning
+            # loop can actually observe SIGINT/SIGTERM. Previously
+            # shutdown.shutdown_requested was set by the signal handler but
+            # never read anywhere - README's "Graceful Shutdown" feature was
+            # entirely decorative.
+            orchestrator = AgentOrchestrator(
+                settings, browser, llm,
+                shutdown_check=lambda: shutdown.shutdown_requested
+            )
+
+            # FIX (2.2 Major): independent wall-clock ceiling on the whole
+            # run, regardless of step count or whether loop detection
+            # catches a thrash pattern.
+            try:
+                result = await asyncio.wait_for(
+                    orchestrator.run(task, starting_url),
+                    timeout=settings.max_wall_clock_seconds
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Task exceeded max wall-clock timeout "
+                    f"({settings.max_wall_clock_seconds}s), aborting."
+                )
+                print(f"\n⏱️  TASK ABORTED: exceeded {settings.max_wall_clock_seconds}s wall-clock limit")
+                return 1
             
             # Display result
             print("\n" + "="*70)
@@ -151,5 +190,17 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    # FIX (5.3 CI, discovered while removing `|| true` from ci.yml's Docker
+    # smoke test): the CI step `docker run ... --version` was silently
+    # papered over by `|| true`, hiding the fact that main.py never actually
+    # parsed --version (or any argv) - it would instead block on
+    # input("Enter task: "), hit EOF in the non-interactive container, and
+    # exit 1 regardless of whether the image was healthy. Now handled
+    # explicitly so the smoke test verifies something real: that the image
+    # can start Python and import the app without crashing.
+    if "--version" in sys.argv:
+        print("CogniWeb Agent v4.2")
+        sys.exit(0)
+
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

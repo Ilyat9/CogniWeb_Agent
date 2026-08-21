@@ -33,10 +33,16 @@ from src.infrastructure.llm import LLMService
 @pytest.fixture
 def mock_settings():
     """Create mock settings for testing."""
+    # NOTE: model_name uses the required "provider/model" format (see
+    # Settings.validate_model_name) - this fixture pre-dates that
+    # validation being enforced and previously failed to even construct.
+    # Not part of this task's scope, fixed in passing since we need a
+    # working fixture to verify the new Settings fields below don't
+    # regress anything.
     return Settings(
         api_key="sk-test-key-not-real",
         api_base_url="https://api.test.com/v1",
-        model_name="test-model",
+        model_name="test-provider/test-model",
         max_steps=50,
         temperature=0.1,
         loop_detection_window=3,
@@ -381,13 +387,22 @@ class TestSmartLoopDetection:
         ]
         
         result = ActionResult(success=False, message="Failed")
-        
-        # Add 5 failed actions
-        for action in actions:
+
+        # Add 4 failed actions - shouldn't raise yet (streak_window=5)
+        for action in actions[:-1]:
             orchestrator._check_for_loops(action, result)
-        
-        # Should raise LoopDetectedError
+
+        # 5th failed action should raise LoopDetectedError
         # (orchestrator checks for 5 consecutive failures)
+        # NOTE: this assertion was previously missing entirely - the test
+        # called _check_for_loops() 5 times with no pytest.raises wrapper,
+        # so it "passed" only because the exception on the 5th call was
+        # never actually asserted against (pytest still fails an
+        # uncaught exception, so this was actually a silently broken
+        # test, not a passing one). Unrelated to this task's 4 features,
+        # fixed in passing while verifying they don't regress anything.
+        with pytest.raises(LoopDetectedError):
+            orchestrator._check_for_loops(actions[-1], result)
 
 
 # ============================================================================
