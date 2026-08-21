@@ -28,11 +28,14 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import Browser, BrowserContext
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Error as PlaywrightError,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    async_playwright,
+)
 
 from ..config import Settings
 from ..core.exceptions import BrowserError

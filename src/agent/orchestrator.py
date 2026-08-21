@@ -231,7 +231,9 @@ class AgentOrchestrator:
                 # back to the normal text path if the vision call itself
                 # fails for any reason).
                 if self._should_use_vision_fallback():
-                    print("👁️  Text-based DOM extraction looked unreliable - trying vision fallback...")
+                    print(
+                        "👁️  Text-based DOM extraction looked unreliable - trying vision fallback..."
+                    )
                     try:
                         action = await self._get_action_via_vision()
                     except Exception as e:

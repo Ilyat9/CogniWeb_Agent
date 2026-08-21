@@ -7,8 +7,8 @@ import httpx
 from openai import (
     APIConnectionError,
     AsyncOpenAI,
+    RateLimitError as OpenAIRateLimitError,
 )
-from openai import RateLimitError as OpenAIRateLimitError
 from pydantic import ValidationError as PydanticValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -161,9 +161,7 @@ class LLMService:
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((NetworkError, httpx.TimeoutException)),
     )
-    async def generate_text(
-        self, messages: list[dict[str, Any]], temperature: float = 0.1
-    ) -> str:
+    async def generate_text(self, messages: list[dict[str, Any]], temperature: float = 0.1) -> str:
         """
         Generic freeform completion call - returns raw text, no AgentAction
         JSON parsing/validation.
