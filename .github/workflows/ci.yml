@@ -187,6 +187,17 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          # FIX (docker job): push:false alone does NOT make the image
+          # available to the local Docker daemon when using the
+          # buildx/docker-container driver - the image only exists inside
+          # buildx's own build cache. The later "Test Docker image" step
+          # runs `docker run cogniweb-agent:<sha>` directly against the
+          # daemon, which is why it failed with "Unable to find image ...
+          # locally" / "pull access denied" (docker tried to pull a
+          # nonexistent remote image instead of finding a local build).
+          # `load: true` explicitly imports the built image into the local
+          # daemon so it's actually runnable afterward.
+          load: true
           push: false
           tags: cogniweb-agent:${{ github.sha }}
           cache-from: type=local,src=/tmp/.buildx-cache
