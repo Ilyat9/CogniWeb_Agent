@@ -218,6 +218,7 @@ site/
 # User & Local Config
 # ============================================================================
 .user
+.zcode/
 *.user
 local_settings.py
 config.local.py
