@@ -56,8 +56,21 @@ class AgentAction(BaseModel):
         "take_screenshot",
         "wait",
         "go_back",
+        "go_forward",
         "query_dom",
         "store_context",
+        "wait_for_element",
+        "hover_element",
+        "press_key",
+        "extract_page_content",
+        "extract_structured_data",
+        "list_tabs",
+        "switch_tab",
+        "download_file",
+        "find_element_by_text",
+        "assert_page_state",
+        "set_variable",
+        "get_variable",
         "done",
     ] = Field(default="wait", description="Tool name to execute")
 
@@ -86,8 +99,21 @@ class AgentAction(BaseModel):
             "take_screenshot",
             "wait",
             "go_back",
+            "go_forward",
             "query_dom",
             "store_context",
+            "wait_for_element",
+            "hover_element",
+            "press_key",
+            "extract_page_content",
+            "extract_structured_data",
+            "list_tabs",
+            "switch_tab",
+            "download_file",
+            "find_element_by_text",
+            "assert_page_state",
+            "set_variable",
+            "get_variable",
             "done",
         ]
         if v not in valid_tools:
@@ -163,6 +189,68 @@ class AgentAction(BaseModel):
         elif tool == "scroll_page":
             if "direction" in v and v["direction"] not in ["up", "down"]:
                 raise ValueError("scroll_page direction must be 'up' or 'down'")
+
+        elif tool == "wait_for_element":
+            if "element_id" not in v and "selector" not in v:
+                raise ValueError("wait_for_element requires 'element_id' or 'selector'")
+            if "state" in v and v["state"] not in ["attached", "visible", "hidden", "detached"]:
+                raise ValueError(
+                    "wait_for_element state must be one of " "attached/visible/hidden/detached"
+                )
+            if "timeout_ms" in v and not isinstance(v["timeout_ms"], (int, float)):
+                raise ValueError("wait_for_element 'timeout_ms' must be numeric")
+
+        elif tool == "hover_element":
+            if "element_id" not in v:
+                raise ValueError("hover_element requires 'element_id' in args")
+
+        elif tool == "press_key":
+            if "key" not in v or not isinstance(v["key"], str) or not v["key"].strip():
+                raise ValueError("press_key requires a non-empty string 'key'")
+            if len(v["key"]) > 30:
+                raise ValueError("press_key 'key' is too long (max 30 chars)")
+
+        elif tool == "extract_structured_data":
+            if "key" not in v or not isinstance(v["key"], str) or not v["key"].strip():
+                raise ValueError("extract_structured_data requires a non-empty string 'key'")
+
+        elif tool == "switch_tab":
+            if "index" not in v or not isinstance(v["index"], int) or isinstance(v["index"], bool):
+                raise ValueError("switch_tab requires an integer 'index'")
+
+        elif tool == "download_file":
+            if "element_id" not in v:
+                raise ValueError("download_file requires 'element_id' in args")
+            if "timeout_ms" in v and not isinstance(v["timeout_ms"], (int, float)):
+                raise ValueError("download_file 'timeout_ms' must be numeric")
+
+        elif tool == "find_element_by_text":
+            if "text" not in v or not isinstance(v["text"], str) or not v["text"].strip():
+                raise ValueError("find_element_by_text requires a non-empty string 'text'")
+
+        elif tool == "assert_page_state":
+            # exactly one expectation per call
+            expects = [k for k in ("expect_text_present", "expect_url_contains") if k in v]
+            expects += ["expect_element_visible"] if "expect_element_visible" in v else []
+            if len(expects) != 1:
+                raise ValueError(
+                    "assert_page_state requires exactly one of 'expect_text_present', "
+                    "'expect_url_contains', 'expect_element_visible'"
+                )
+            if "expect_text_present" in v and not isinstance(v["expect_text_present"], str):
+                raise ValueError("assert_page_state 'expect_text_present' must be a string")
+            if "expect_url_contains" in v and not isinstance(v["expect_url_contains"], str):
+                raise ValueError("assert_page_state 'expect_url_contains' must be a string")
+
+        elif tool == "set_variable":
+            if "name" not in v or not isinstance(v["name"], str) or not v["name"].strip():
+                raise ValueError("set_variable requires a non-empty string 'name'")
+            if "value" not in v:
+                raise ValueError("set_variable requires 'value' in args")
+
+        elif tool == "get_variable":
+            if "name" not in v or not isinstance(v["name"], str) or not v["name"].strip():
+                raise ValueError("get_variable requires a non-empty string 'name'")
 
         elif tool == "store_context":
             reserved_fields = {"tool", "thought", "reasoning"}
@@ -349,6 +437,13 @@ class TaskResult(BaseModel):
     final_url: str | None = Field(default=None, description="Final page URL")
 
     error: str | None = Field(default=None, description="Error message if failed")
+
+    tokens_used: int | None = Field(
+        default=None,
+        description="Total LLM tokens (prompt + completion) consumed by the "
+        "run, as reported by the provider's usage blocks. None when the "
+        "provider/mock did not report usage.",
+    )
 
     context_data: dict[str, Any] = Field(
         default_factory=dict, description="Final stored context data"

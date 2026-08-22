@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CogniWeb Agent — Web UI</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --border: #d8dce3; --text: #1e2430;
+    --muted: #66707f; --accent: #2563eb; --accent-soft: #dbeafe;
+    --ok: #16a34a; --ok-soft: #dcfce7; --err: #dc2626; --err-soft: #fee2e2;
+    --warn: #d97706; --warn-soft: #fef3c7; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+  header { background: #111827; color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 24px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  nav button { background: transparent; border: none; color: #9ca3af; padding: 8px 12px; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: #fff; border-bottom-color: var(--accent); }
+  nav button:hover { color: #e5e7eb; }
+  main { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  input[type=text], textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  button.primary { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 9px 18px; font-size: 14px; cursor: pointer; margin-top: 12px; }
+  button.primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  button.danger { background: var(--err); color: #fff; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  button.ghost { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.queued { background: var(--accent-soft); color: var(--accent); }
+  .badge.running { background: var(--warn-soft); color: var(--warn); }
+  .badge.finished { background: #e5e7eb; color: #374151; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.err { background: var(--err-soft); color: var(--err); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .steps { list-style: none; margin: 0; padding: 0; max-height: 480px; overflow-y: auto; }
+  .steps li { border-left: 3px solid var(--border); padding: 8px 12px; margin-bottom: 8px; background: #fafbfc; border-radius: 0 6px 6px 0; }
+  .steps li.error { border-left-color: var(--err); }
+  .steps li.ok { border-left-color: var(--ok); }
+  .step-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .step-head .n { font-weight: 700; color: var(--muted); }
+  .step-head .tool { font-family: var(--mono); font-size: 13px; background: #eef1f5; padding: 1px 6px; border-radius: 4px; }
+  .step-head .ms { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .thought { color: var(--muted); font-style: italic; margin: 2px 0; }
+  .step-msg { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; }
+  .kv { display: grid; grid-template-columns: 200px 1fr; gap: 4px 12px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; background: #fafbfc; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: var(--accent-soft); }
+  #screenshot { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; margin-top: 8px; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; font-weight: 600; }
+  .banner.captcha { background: var(--err-soft); color: var(--err); }
+  .banner.breaker { background: #7f1d1d; color: #fff; }
+  .muted { color: var(--muted); }
+  .hidden { display: none !important; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+  pre.json { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; font-family: var(--mono); }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌐 CogniWeb Agent</h1>
+  <nav>
+    <button data-tab="run" class="active">Задача</button>
+    <button data-tab="history">История</button>
+    <button data-tab="reports">Отчёты</button>
+    <button data-tab="config">Настройки</button>
+  </nav>
+  <input type="password" id="api-token" placeholder="API token (если задан)"
+         title="API_AUTH_TOKEN сервера. Хранится только в памяти вкладки (не localStorage), вводится заново после перезагрузки."
+         style="margin-left: auto; background: #1f2937; color: #e5e7eb; border: 1px solid #374151; border-radius: 6px; padding: 5px 10px; font-size: 12px; width: 200px;">
+</header>
+<main>
+
+<!-- ============ TAB: запуск задачи + живой прогресс ============ -->
+<section id="tab-run">
+  <div class="card" id="task-form-card">
+    <h2>Новая задача</h2>
+    <label for="task-input">Текст задачи</label>
+    <textarea id="task-input" placeholder="Например: найди 5 вакансий Python-разработчика и сохрани названия компаний"></textarea>
+    <label for="url-input">Starting URL (необязательно)</label>
+    <input type="text" id="url-input" placeholder="https://example.com">
+    <button class="primary" id="submit-btn">▶ Запустить</button>
+    <span id="submit-error" style="color: var(--err); margin-left: 10px;"></span>
+  </div>
+
+  <div class="card hidden" id="live-card">
+    <div class="toolbar">
+      <h2 style="margin: 0;">Задача <span class="muted" id="live-task-id" style="font-family: var(--mono); font-size: 12px;"></span></h2>
+      <span class="badge queued" id="live-state">queued</span>
+      <span id="live-url" class="muted" style="font-family: var(--mono); font-size: 12px;"></span>
+      <button class="danger" id="stop-btn" style="margin-left: auto;">⏹ Остановить</button>
+    </div>
+    <div id="captcha-banner"></div>
+    <div class="split">
+      <div>
+        <h2 style="font-size: 13px; color: var(--muted);">Шаги</h2>
+        <ol class="steps" id="steps-list"></ol>
+      </div>
+      <div>
+        <h2 style="font-size: 13px; color: var(--muted);">Состояние страницы</h2>
+        <img id="screenshot" alt="Скриншот недоступен" src="" style="display: none;">
+        <p class="muted" id="no-screenshot">Скриншот появится после первого take_screenshot.</p>
+        <div id="result-panel" class="hidden" style="margin-top: 12px;">
+          <h2 style="font-size: 13px; color: var(--muted);">Результат</h2>
+          <div class="kv" id="result-kv"></div>
+          <h2 style="font-size: 13px; color: var(--muted); margin-top: 10px;">context_data</h2>
+          <pre class="json" id="result-context">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB: история ============ -->
+<section id="tab-history" class="hidden">
+  <div class="card">
+    <h2>История задач</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Задача</th><th>Статус</th><th>Итог</th><th>Шаги</th><th>Отправлена</th></tr></thead>
+      <tbody id="history-body"><tr><td colspan="6" class="muted">Загрузка…</td></tr></tbody>
+    </table>
+    <button class="ghost" id="history-refresh" style="margin-top: 10px;">↻ Обновить</button>
+  </div>
+</section>
+
+<!-- ============ TAB: отчёты ============ -->
+<section id="tab-reports" class="hidden">
+  <div class="card">
+    <h2>Отчёты по запускам (reports/run_*.json)</h2>
+    <div class="split">
+      <div>
+        <table>
+          <thead><tr><th>run_id</th><th>Размер</th></tr></thead>
+          <tbody id="reports-body"><tr><td colspan="2" class="muted">Загрузка…</td></tr></tbody>
+        </table>
+        <button class="ghost" id="reports-refresh" style="margin-top: 10px;">↻ Обновить</button>
+      </div>
+      <div id="report-detail"><p class="muted">Выберите отчёт слева.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TAB: настройки ============ -->
+<section id="tab-config" class="hidden">
+  <div class="card">
+    <h2>Активная конфигурация (GET /config, секреты маскированы)</h2>
+    <table>
+      <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
+      <tbody id="config-body"><tr><td colspan="2" class="muted">Загрузка…</td></tr></tbody>
+    </table>
+    <button class="ghost" id="config-refresh" style="margin-top: 10px;">↻ Обновить</button>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+
+// ---------- helpers ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// API_AUTH_TOKEN support: kept ONLY in a JS variable for the lifetime of
+// the tab (operator's read-only tool - no localStorage persistence, the
+// value is retyped after a page reload).
+let apiToken = "";
+$("api-token").addEventListener("change", () => { apiToken = $("api-token").value.trim(); });
+
+async function api(path, opts) {
+  opts = opts || {};
+  if (apiToken) {
+    opts.headers = Object.assign({}, opts.headers, { "Authorization": "Bearer " + apiToken });
+  }
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) {
+    throw new Error("401: нужен API-токен (введите его в поле справа вверху)");
+  }
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try { detail = (await resp.json()).detail || detail; } catch (e) {}
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  return resp.json();
+}
+
+function setStateBadge(el, state, success) {
+  el.textContent = state;
+  el.className = "badge " + state;
+  if (state === "finished") {
+    el.textContent = success ? "finished ✓" : "finished ✗";
+    el.classList.add(success ? "ok" : "err");
+  }
+}
+
+// ---------- tabs ----------
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    ["run", "history", "reports", "config"].forEach((t) =>
+      $("tab-" + t).classList.toggle("hidden", t !== btn.dataset.tab));
+    if (btn.dataset.tab === "history") loadHistory();
+    if (btn.dataset.tab === "reports") loadReports();
+    if (btn.dataset.tab === "config") loadConfig();
+  });
+});
+
+// ---------- live task view ----------
+let liveTask = null;   // {id, ws, pollTimer, steps: Set}
+const seenSteps = new Set();
+
+function openLiveView(taskId) {
+  liveTask = { id: taskId, ws: null, pollTimer: null };
+  seenSteps.clear();
+  $("live-card").classList.remove("hidden");
+  $("live-task-id").textContent = taskId;
+  $("steps-list").innerHTML = "";
+  $("result-panel").classList.add("hidden");
+  $("captcha-banner").innerHTML = "";
+  setStateBadge($("live-state"), "queued");
+  $("stop-btn").disabled = false;
+  $("live-url").textContent = "";
+  document.querySelector('[data-tab="run"]').click();
+  connectWs(taskId).catch(() => startPolling(taskId));
+}
+
+async function connectWs(taskId) {
+  let ticket = null;
+  // If auth is on, exchange the Bearer token for a one-time short-lived
+  // WS ticket first (POST, header-based): the static token itself must
+  // never appear in a URL (logs/history/Referer leakage).
+  if (apiToken) {
+    try {
+      const t = await api("/ws/ticket", { method: "POST" });
+      if (t.required && t.ticket) ticket = t.ticket;
+    } catch (e) { startPolling(taskId); return; }
+  }
+  let ws;
+  try {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ticketQuery = ticket ? `?ticket=${encodeURIComponent(ticket)}` : "";
+    ws = new WebSocket(`${proto}//${location.host}/ws/task/${taskId}${ticketQuery}`);
+  } catch (e) { startPolling(taskId); return; }
+  liveTask.ws = ws;
+  ws.onmessage = (msg) => {
+    try { handleEvent(JSON.parse(msg.data)); } catch (e) {}
+  };
+  ws.onerror = () => { if (liveTask && liveTask.ws === ws) startPolling(taskId); };
+  ws.onclose = () => { if (liveTask && liveTask.ws === ws) startPolling(taskId); };
+}
+
+function startPolling(taskId) {
+  if (!liveTask || liveTask.pollTimer || liveTask.id !== taskId) return;
+  liveTask.pollTimer = setInterval(async () => {
+    try {
+      const data = await api(`/task/${taskId}/steps`);
+      (data.steps || []).forEach(handleEvent);
+      if (data.state === "finished") stopPolling();
+    } catch (e) { stopPolling(); }
+  }, 1500);
+}
+function stopPolling() {
+  if (liveTask && liveTask.pollTimer) { clearInterval(liveTask.pollTimer); liveTask.pollTimer = null; }
+}
+
+function handleEvent(ev) {
+  if (!liveTask || ev.task_id && ev.task_id !== liveTask.id) return;
+  const key = JSON.stringify([ev.step, ev.tool, ev.type, ev.ts, ev.event]);
+  if (seenSteps.has(key)) return;
+  seenSteps.add(key);
+
+  if (ev.type === "final") {
+    setStateBadge($("live-state"), "finished", ev.result && ev.result.success);
+    $("stop-btn").disabled = true;
+    stopPolling();
+    try { if (liveTask.ws) liveTask.ws.close(); } catch (e) {}
+    renderResult(ev.result || {});
+    return;
+  }
+
+  if (ev.type === "step") {
+    if (ev.tool === "captcha") {
+      const breaker = ev.event === "captcha_circuit_breaker";
+      $("captcha-banner").innerHTML =
+        `<div class="banner ${breaker ? "breaker" : "captcha"}">🤖 ${breaker
+          ? "Captcha circuit breaker: задача остановлена после серии капч. Решите капчу вручную и перезапустите задачу."
+          : "Обнаружена капча — требуется ручное решение. Agent ждёт (checkpoint сохранён)."}</div>`;
+      return;
+    }
+    if (ev.event === "evaluator_rejected") {
+      appendStep({ step: ev.step, tool: "evaluator", success: false,
+        message: "Само-проверка отклонила 'done': " + (ev.tool || ""), duration_ms: ev.duration_ms });
+      return;
+    }
+    appendStep(ev);
+    if (ev.url) $("live-url").textContent = ev.url;
+    if (ev.screenshot_path) refreshScreenshot();
+  }
+}
+
+function appendStep(ev) {
+  const li = document.createElement("li");
+  li.className = ev.success ? "ok" : "error";
+  const args = ev.args && Object.keys(ev.args).length
+    ? ` <span class="muted">${esc(JSON.stringify(ev.args)).slice(0, 160)}</span>` : "";
+  li.innerHTML = `
+    <div class="step-head">
+      <span class="n">#${ev.step ?? "—"}</span>
+      <span class="tool">${esc(ev.tool || "?")}${args}</span>
+      <span class="badge ${ev.success ? "ok" : "err"}">${ev.success ? "ok" : "error"}</span>
+      <span class="ms">${ev.duration_ms != null ? ev.duration_ms + " ms" : ""}</span>
+    </div>
+    ${ev.thought ? `<div class="thought">💭 ${esc(ev.thought)}</div>` : ""}
+    ${ev.message ? `<div class="step-msg">${esc(ev.message).slice(0, 1200)}</div>` : ""}`;
+  $("steps-list").appendChild(li);
+  $("steps-list").scrollTop = $("steps-list").scrollHeight;
+}
+
+async function refreshScreenshot() {
+  // Fetched as a blob (not <img src>) so the bearer token can be attached
+  // when API_AUTH_TOKEN is configured; a 401/404 just keeps the placeholder.
+  try {
+    const opts = apiToken ? { headers: { "Authorization": "Bearer " + apiToken } } : {};
+    const resp = await fetch(`/task/${liveTask.id}/screenshot?ts=${Date.now()}`, opts);
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    const img = $("screenshot");
+    img.src = URL.createObjectURL(blob);
+    img.style.display = "";
+    $("no-screenshot").classList.add("hidden");
+  } catch (e) { /* keep placeholder */ }
+}
+
+function renderResult(result) {
+  $("result-panel").classList.remove("hidden");
+  const rows = [
+    ["Итог", result.success ? "✅ успех" : "❌ провал"],
+    ["Summary", result.summary],
+    ["Шагов", result.steps_taken],
+    ["Длительность", result.total_duration_seconds != null ? result.total_duration_seconds.toFixed(1) + " c" : "—"],
+    ["Токенов", result.tokens_used != null ? result.tokens_used : "—"],
+    ["Финальный URL", result.final_url || "—"],
+    ["Ошибка", result.error || "—"],
+  ];
+  $("result-kv").innerHTML = rows.map(([k, v]) =>
+    `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join("");
+  $("result-context").textContent = result.context_data && Object.keys(result.context_data).length
+    ? JSON.stringify(result.context_data, null, 2) : "—";
+}
+
+// ---------- form ----------
+$("submit-btn").addEventListener("click", async () => {
+  const task = $("task-input").value.trim();
+  const url = $("url-input").value.trim() || null;
+  $("submit-error").textContent = "";
+  if (!task) { $("submit-error").textContent = "Введите текст задачи"; return; }
+  $("submit-btn").disabled = true;
+  try {
+    const data = await api("/task", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, starting_url: url }),
+    });
+    openLiveView(data.task_id);
+  } catch (e) {
+    $("submit-error").textContent = "Не удалось отправить: " + e.message;
+  } finally { $("submit-btn").disabled = false; }
+});
+
+$("stop-btn").addEventListener("click", async () => {
+  if (!liveTask) return;
+  $("stop-btn").disabled = true;
+  try { await api(`/task/${liveTask.id}/stop`, { method: "POST" }); }
+  catch (e) { $("submit-error").textContent = "Stop: " + e.message; $("stop-btn").disabled = false; }
+});
+
+// ---------- history ----------
+async function loadHistory() {
+  const body = $("history-body");
+  try {
+    const data = await api("/tasks");
+    if (!data.tasks.length) { body.innerHTML = `<tr><td colspan="6" class="muted">Пока нет задач</td></tr>`; return; }
+    body.innerHTML = "";
+    data.tasks.forEach((t) => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      const badge = t.state === "finished"
+        ? `<span class="badge ${t.success ? "ok" : "err"}">finished</span>`
+        : `<span class="badge ${t.state}">${t.state}</span>`;
+      tr.innerHTML = `
+        <td style="font-family: var(--mono); font-size: 12px;">${esc(t.task_id.slice(0, 10))}…</td>
+        <td>${esc((t.task || "").slice(0, 80))}</td>
+        <td>${badge}</td>
+        <td>${esc((t.summary || t.error || "—").slice(0, 60))}</td>
+        <td>${t.steps_taken ?? "—"}</td>
+        <td class="muted">${esc((t.submitted_at || "").replace("T", " ").slice(0, 19))}</td>`;
+      tr.addEventListener("click", () => openHistoryDetail(t.task_id));
+      body.appendChild(tr);
+    });
+  } catch (e) { body.innerHTML = `<tr><td colspan="6" class="muted">Ошибка: ${esc(e.message)}</td></tr>`; }
+}
+$("history-refresh").addEventListener("click", loadHistory);
+
+async function openHistoryDetail(taskId) {
+  liveTask = { id: taskId, ws: null, pollTimer: null };
+  seenSteps.clear();
+  $("live-card").classList.remove("hidden");
+  $("live-task-id").textContent = taskId;
+  $("steps-list").innerHTML = "";
+  $("captcha-banner").innerHTML = "";
+  $("stop-btn").disabled = true;
+  document.querySelector('[data-tab="run"]').click();
+  const [status, stepsData] = await Promise.all([
+    api(`/task/${taskId}`), api(`/task/${taskId}/steps`),
+  ]);
+  setStateBadge($("live-state"), status.state, status.result && status.result.success);
+  (stepsData.steps || []).forEach(handleEvent);
+  if (status.result) renderResult(status.result);
+  refreshScreenshot();
+}
+
+// ---------- reports ----------
+async function loadReports() {
+  const body = $("reports-body");
+  try {
+    const data = await api("/reports");
+    if (!data.reports.length) { body.innerHTML = `<tr><td colspan="2" class="muted">Отчётов нет</td></tr>`; return; }
+    body.innerHTML = "";
+    data.reports.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `<td style="font-family: var(--mono); font-size: 12px;">${esc(r.run_id)}</td>
+                      <td class="muted">${(r.size / 1024).toFixed(1)} KB</td>`;
+      tr.addEventListener("click", () => loadReportDetail(r.run_id));
+      body.appendChild(tr);
+    });
+  } catch (e) { body.innerHTML = `<tr><td colspan="2" class="muted">Ошибка: ${esc(e.message)}</td></tr>`; }
+}
+$("reports-refresh").addEventListener("click", loadReports);
+
+async function loadReportDetail(runId) {
+  const box = $("report-detail");
+  box.innerHTML = `<p class="muted">Загрузка ${esc(runId)}…</p>`;
+  try {
+    const rep = await api(`/reports/${runId}`);
+    const errRows = Object.entries(rep.errors_by_type || {});
+    box.innerHTML = `
+      <table>
+        <tr><td class="muted">Задача</td><td>${esc(rep.task)}</td></tr>
+        <tr><td class="muted">Итог</td><td><span class="badge ${rep.success ? "ok" : "err"}">${rep.success ? "успех" : "провал"}</span></td></tr>
+        <tr><td class="muted">Шагов</td><td>${rep.steps ?? "—"}</td></tr>
+        <tr><td class="muted">Длительность</td><td>${rep.duration ?? "—"} c</td></tr>
+        <tr><td class="muted">Токенов</td><td>${rep.tokens ?? "—"}</td></tr>
+        <tr><td class="muted">Loop-триггеров</td><td>${rep.loop_triggers ?? 0}</td></tr>
+        <tr><td class="muted">Событий капчи</td><td>${rep.captcha_events ?? 0}</td></tr>
+        <tr><td class="muted">Ошибки по типам</td><td>${
+          errRows.length ? errRows.map(([k, v]) => `<span class="badge err">${esc(k)} × ${v}</span>`).join(" ") : "—"}</td></tr>
+        <tr><td class="muted">Финальная ошибка</td><td>${esc(rep.error || "—")}</td></tr>
+        <tr><td class="muted">Финальный URL</td><td style="font-family: var(--mono); font-size: 12px;">${esc(rep.final_url || "—")}</td></tr>
+      </table>
+      <p class="muted" style="margin-bottom: 0;">Сырой JSON: <code>/reports/${esc(runId)}</code></p>`;
+  } catch (e) { box.innerHTML = `<p class="muted">Ошибка: ${esc(e.message)}</p>`; }
+}
+
+// ---------- config ----------
+async function loadConfig() {
+  const body = $("config-body");
+  try {
+    const data = await api("/config");
+    const entries = Object.entries(data.settings || {});
+    body.innerHTML = entries.map(([k, v]) =>
+      `<tr><td style="font-family: var(--mono); font-size: 12px;">${esc(k)}</td>
+       <td style="font-family: var(--mono); font-size: 12px;">${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("");
+  } catch (e) { body.innerHTML = `<tr><td colspan="2" class="muted">Ошибка: ${esc(e.message)}</td></tr>`; }
+}
+$("config-refresh").addEventListener("click", loadConfig);
+</script>
+</body>
+</html>

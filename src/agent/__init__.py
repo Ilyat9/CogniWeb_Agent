@@ -1,5 +1,5 @@
 """Agent orchestration logic."""
 
-from .orchestrator import AgentOrchestrator
+from .orchestrator import AgentOrchestrator, run_parallel_agents
 
-__all__ = ["AgentOrchestrator"]
+__all__ = ["AgentOrchestrator", "run_parallel_agents"]

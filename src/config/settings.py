@@ -12,11 +12,12 @@ Why Pydantic Settings?
 - Easy testing via model instantiation with overrides
 """
 
+import re
 import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -429,9 +430,100 @@ class Settings(BaseSettings):
         description="Number of recent actions checked for the 'all failed' thrash-detection rule",
     )
 
-    # ===== Stealth Configuration =====
-    enable_stealth: bool = Field(
-        default=True, alias="ENABLE_STEALTH", description="Enable playwright-stealth mode"
+    # ===== Stealth Configuration (Task 4: stealth browser mode) =====
+    # Master switch. Unlike every other opt-in feature flag in this project,
+    # this one defaults to True: stealth mode does not change WHAT the agent
+    # does functionally (same tools, same task semantics) - it only makes the
+    # legit automation session less likely to be misclassified as a bot by
+    # anti-fingerprinting heuristics (which causes spurious captchas/blocks).
+    # Set ENABLE_STEALTH_MODE=false to get the "raw" Playwright profile back
+    # (e.g. for before/after debugging screenshots).
+    # Alias ENABLE_STEALTH is kept so pre-existing .env files keep working.
+    enable_stealth_mode: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ENABLE_STEALTH_MODE", "ENABLE_STEALTH"),
+        description="Apply the stealth browser profile (fingerprint init "
+        "scripts, consistent UA/locale/timezone/viewport, human-like mouse "
+        "and typing patterns, optional playwright-stealth patches). This "
+        "lowers false-positive bot detection for LEGITIMATE sessions; it "
+        "never solves or bypasses an already-presented captcha.",
+    )
+
+    # The stealth profile must be internally CONSISTENT, not "random": a
+    # mismatched fingerprint (latest-Chrome-on-Windows UA + headless WebGL
+    # renderer, or en-US UA + ru-RU Accept-Language) is itself a stronger
+    # bot signal than an imperfect-but-coherent profile. All four fields
+    # below are applied together whenever ENABLE_STEALTH_MODE=true.
+    stealth_user_agent: str = Field(
+        default=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        alias="STEALTH_USER_AGENT",
+        description="User-Agent used for the browser context. Must stay "
+        "consistent with STEALTH_LOCALE / STEALTH_TIMEZONE / the WebGL "
+        "renderer patched in by init scripts.",
+        min_length=20,
+    )
+
+    stealth_locale: str = Field(
+        default="en-US",
+        alias="STEALTH_LOCALE",
+        description="Browser locale (ICU tag, e.g. 'en-US', 'ru-RU'). Drives "
+        "context locale, navigator.languages and the Accept-Language header "
+        "so all three agree.",
+    )
+
+    stealth_timezone: str = Field(
+        default="America/New_York",
+        alias="STEALTH_TIMEZONE",
+        description="IANA timezone id for the browser context (e.g. "
+        "'America/New_York', 'Europe/Moscow'). Should be plausible for "
+        "STEALTH_LOCALE.",
+    )
+
+    stealth_viewport_width: int = Field(
+        default=1920,
+        ge=320,
+        le=7680,
+        alias="STEALTH_VIEWPORT_WIDTH",
+        description="Viewport width for the stealth profile (keep it a "
+        "common desktop resolution).",
+    )
+
+    stealth_viewport_height: int = Field(
+        default=1080,
+        ge=240,
+        le=4320,
+        alias="STEALTH_VIEWPORT_HEIGHT",
+        description="Viewport height for the stealth profile.",
+    )
+
+    @field_validator("stealth_locale")
+    @classmethod
+    def validate_stealth_locale(cls, v: str) -> str:
+        """Locale must look like an ICU tag (xx or xx-XX) - it is passed to
+        Playwright's context locale and into Accept-Language verbatim."""
+        v = (v or "").strip()
+        if not re.fullmatch(r"[a-z]{2,3}(-[A-Za-z]{2,8})*", v):
+            raise ValueError(
+                f"STEALTH_LOCALE must be an ICU tag like 'en-US' or 'ru-RU', got: '{v}'"
+            )
+        return v
+
+    # FIX (3.3, captcha handling - human-in-the-loop scope): reduces how
+    # often captchas are triggered in the first place (varied mouse
+    # movement before interacting with a page, human-like headers).
+    # This is NOT captcha solving/bypass of an active challenge - it only
+    # lowers automated-traffic fingerprinting signals a site's bot
+    # detection may key off of. See BrowserService._human_mouse_warmup().
+    captcha_avoidance_mode: bool = Field(
+        default=True,
+        alias="CAPTCHA_AVOIDANCE_MODE",
+        description="Apply light anti-fingerprinting warmup (randomized mouse "
+        "movement, human-like Accept-Language/sec-ch-ua-platform headers) "
+        "after each browser start, to reduce captcha trigger frequency. "
+        "Does not solve or bypass an already-presented captcha.",
     )
 
     typing_speed_min: int = Field(
@@ -484,7 +576,7 @@ class Settings(BaseSettings):
         "tiktoken' rationale) rather than a real tokenizer.",
     )
 
-    # ===== Vision Fallback (Task 4) =====
+    # ===== Vision / Visual Fallback (Task 4 + Browser-Use ideas) =====
     # FIX (Task 4): on heavy/poorly-structured pages, text-based DOM
     # extraction can come back empty (extraction failed) or so large and
     # text-sparse that the LLM has no real signal for what's relevant. As
@@ -493,12 +585,29 @@ class Settings(BaseSettings):
     # reusing the same element_id used in text mode) to a vision-capable
     # model. See AgentOrchestrator._should_use_vision_fallback() /
     # _get_action_via_vision().
+    #
+    # Task 3 (Browser-Use set-of-marks): the same fallback additionally
+    # triggers after N consecutive SelectorError-ish step failures
+    # (visual_fallback_error_streak below) - the case where the DOM snapshot
+    # exists but keeps failing to ground the element the model wants.
+    # Default is False (off): vision calls are slower/pricier, and the flag
+    # is additionally gated by MODEL_SUPPORTS_VISION. Both env spellings
+    # (ENABLE_VISION_FALLBACK / ENABLE_VISUAL_FALLBACK) are accepted.
+    # NOTE on the default: this flag PRE-DATES the visual-fallback task
+    # and its default was already `true` there, so it stays `true` - the
+    # project convention is that existing defaults never change. The
+    # effective default behavior is still "off": MODEL_SUPPORTS_VISION
+    # (default false) gates every vision call, so text-only providers are
+    # never affected. The new ENABLE_VISUAL_FALLBACK spelling is just an
+    # accepted alias, not a new flag.
     enable_vision_fallback: bool = Field(
         default=True,
-        alias="ENABLE_VISION_FALLBACK",
-        description="Allow falling back to an annotated screenshot when text-based "
-        "DOM extraction is empty, failed, or too noisy. Still gated by "
-        "MODEL_SUPPORTS_VISION - stays a no-op text-only providers.",
+        validation_alias=AliasChoices("ENABLE_VISION_FALLBACK", "ENABLE_VISUAL_FALLBACK"),
+        description="Allow falling back to an annotated screenshot (set-of-marks "
+        "style, numbered boxes = element_id) when text-based DOM extraction "
+        "is empty/failed/too noisy, or when the same element-targeting step "
+        "keeps failing (VISUAL_FALLBACK_ERROR_STREAK). A no-op unless "
+        "MODEL_SUPPORTS_VISION is also enabled.",
     )
 
     model_supports_vision: bool = Field(
@@ -520,6 +629,166 @@ class Settings(BaseSettings):
         "noisy for reliable text-only reasoning and consider vision fallback.",
     )
 
+    # Task 3 (Browser-Use visual fallback): after this many consecutive
+    # steps ending in an element-targeting failure (InvalidElementId /
+    # SelectorError-style), switch the next step to the annotated-
+    # screenshot mode instead of feeding the same failing text snapshot.
+    visual_fallback_error_streak: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        alias="VISUAL_FALLBACK_ERROR_STREAK",
+        description="Number of consecutive element-targeting failures "
+        "(InvalidElementId etc.) before the visual (set-of-marks) fallback "
+        "kicks in. Only relevant when ENABLE_VISUAL_FALLBACK and "
+        "MODEL_SUPPORTS_VISION are both on.",
+    )
+
+    # ===== Post-MVP features (opt-in; defaults preserve existing behavior) =====
+
+    # 2.1: how tokens are estimated when budgeting the DOM observation.
+    token_counter_mode: str = Field(
+        default="heuristic",
+        alias="TOKEN_COUNTER_MODE",
+        description="'heuristic' (default): cheap chars/4 estimate, no extra "
+        "dependency. 'tiktoken': real tokenizer via lazy import; silently "
+        "falls back to the heuristic (one log per run) if the package is "
+        "not installed.",
+    )
+
+    @field_validator("token_counter_mode")
+    @classmethod
+    def validate_token_counter_mode(cls, v: str) -> str:
+        v = (v or "heuristic").strip().lower()
+        if v not in ("heuristic", "tiktoken"):
+            raise ValueError(f"TOKEN_COUNTER_MODE must be 'heuristic' or 'tiktoken', got: '{v}'")
+        return v
+
+    # 2.2: self-critique evaluator on 'done'. Off by default.
+    enable_evaluator: bool = Field(
+        default=False,
+        alias="ENABLE_EVALUATOR",
+        description="When True, a 'done' action triggers one extra LLM "
+        "self-critique call (VERDICT:PASS/FAIL). FAIL pushes a corrective "
+        "message and the loop continues, up to evaluator_max_retries times.",
+    )
+
+    evaluator_max_retries: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        alias="EVALUATOR_MAX_RETRIES",
+        description="How many times the evaluator may reject a 'done' and "
+        "send the agent back to work before the result is returned as-is.",
+    )
+
+    # 2.3: parallel multi-page task execution.
+    enable_multi_page: bool = Field(
+        default=False,
+        alias="ENABLE_MULTI_PAGE",
+        description="Allow run_parallel_agents(): multiple orchestrators on "
+        "separate pages (shared browser context, isolated per-task state).",
+    )
+
+    # 2.4: host-level navigation policy (SSRF / lateral-movement guard).
+    navigate_allowed_domains: list[str] | None = Field(
+        default=None,
+        alias="NAVIGATE_ALLOWED_DOMAINS",
+        description="Optional allowlist of hostnames the agent may navigate "
+        "to. None (default) = no domain restriction. Example: "
+        "['example.com', 'api.example.com'] (subdomains must be listed "
+        "explicitly).",
+    )
+
+    navigate_block_private_networks: bool = Field(
+        default=True,
+        alias="NAVIGATE_BLOCK_PRIVATE_NETWORKS",
+        description="Resolve the target host before navigation and refuse "
+        "RFC1918/loopback/link-local addresses (including "
+        "169.254.169.254 cloud metadata) unless the host is explicitly "
+        "listed in NAVIGATE_ALLOWED_DOMAINS. Set to False to opt out "
+        "(e.g. when the operator genuinely targets internal services).",
+    )
+
+    # 2.5: circuit breaker for repeated captcha checkpoints.
+    captcha_circuit_breaker_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        alias="CAPTCHA_CIRCUIT_BREAKER_THRESHOLD",
+        description="Stop opening blocking human-in-the-loop checkpoints "
+        "after this many captcha events in a single run; return a "
+        "CaptchaCircuitBreaker TaskResult instead of hanging indefinitely.",
+    )
+
+    # 3.1: run report output directory.
+    reports_dir: Path = Field(
+        default=Path("./reports"),
+        alias="REPORTS_DIR",
+        description="Directory for per-run JSON reports (tokens, steps, "
+        "loop triggers, captcha events, errors).",
+    )
+
+    # ===== Task 2 (new tools) =====
+    # download_file(): downloads are saved here. Like UPLOAD_ALLOWED_DIR,
+    # this keeps agent-initiated writes to a single operator-controlled
+    # directory.
+    download_allowed_dir: Path = Field(
+        default=Path("./downloads"),
+        alias="DOWNLOAD_ALLOWED_DIR",
+        description="Directory where download_file() saves files (mirrors "
+        "UPLOAD_ALLOWED_DIR for downloads).",
+    )
+
+    # ===== Task 3 (Crawl4AI approach: clean Markdown extraction) =====
+    # extract_page_content(): page HTML -> cleaned Markdown/text with the
+    # noise (nav/script/style/ads boilerplate) filtered out. Massively
+    # cheaper in tokens than the raw DOM snapshot for read/analyze tasks.
+    # Off by default (opt-in, like the other post-MVP tools). When on, uses
+    # crawl4ai's HTML->Markdown conversion if the optional package is
+    # installed (requirements-tools.txt), else the built-in lightweight
+    # heuristic cleaner - never launches a second browser.
+    enable_markdown_extraction: bool = Field(
+        default=False,
+        alias="ENABLE_MARKDOWN_EXTRACTION",
+        description="Enable the extract_page_content tool (cleaned "
+        "Markdown/text of the current page). Uses crawl4ai if installed "
+        "(requirements-tools.txt), otherwise a built-in heuristic cleaner.",
+    )
+
+    # ===== API service mode: access control (hardening) =====
+    # The agent drives a real browser and runs arbitrary text tasks; an
+    # API bound to a public interface without auth would let anyone submit
+    # tasks as the server. Defaults are the SAFE ones: localhost-only
+    # binding, no token (backwards compatible with already-deployed
+    # installations). External exposure = two explicit opt-ins.
+    api_bind_host: str = Field(
+        default="127.0.0.1",
+        alias="API_BIND_HOST",
+        description="Network interface the API/UI server binds to. Default "
+        "127.0.0.1 = localhost only; set 0.0.0.0 (explicit opt-in) only "
+        "behind a firewall/reverse proxy or on a trusted network.",
+    )
+
+    @field_validator("api_bind_host")
+    @classmethod
+    def validate_api_bind_host(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v or any(ch.isspace() for ch in v):
+            raise ValueError(f"API_BIND_HOST must be a host/IP without spaces, got: '{v}'")
+        return v
+
+    api_auth_token: str | None = Field(
+        default=None,
+        alias="API_AUTH_TOKEN",
+        description="Optional bearer token. When set, every /task* "
+        "endpoint (plus /config, /reports and the WebSocket channel) "
+        "requires 'Authorization: Bearer <token>'; /health stays open for "
+        "container/orchestrator liveness probes. Default None = auth off "
+        "(backwards compatible). Use a long random string.",
+        min_length=16,
+    )
+
     # ===== Debugging =====
     debug_mode: bool = Field(
         default=False,
@@ -533,6 +802,17 @@ class Settings(BaseSettings):
         description="Directory for error screenshots",
     )
 
+    # FIX (3.3, captcha handling - human-in-the-loop scope): where captcha
+    # checkpoints (task, conversation state, context_data, url, step) are
+    # persisted while waiting for a human to solve the captcha manually.
+    # Lets Ctrl+C / process restart during a captcha wait recover instead
+    # of silently losing all progress (see AgentOrchestrator._handle_captcha).
+    checkpoint_dir: Path = Field(
+        default=Path("./checkpoints"),
+        alias="CHECKPOINT_DIR",
+        description="Directory for captcha human-in-the-loop checkpoints",
+    )
+
     @model_validator(mode="after")
     def create_directories(self) -> "Settings":
         """
@@ -544,6 +824,9 @@ class Settings(BaseSettings):
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.upload_allowed_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        self.download_allowed_dir.mkdir(parents=True, exist_ok=True)
         return self
 
 

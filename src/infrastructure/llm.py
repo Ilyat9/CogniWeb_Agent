@@ -36,6 +36,25 @@ class LLMService:
 
         self._connection_verified = False
 
+        # 3.1: real token accounting from the API's usage block. The
+        # OpenAI-compatible response has always carried usage.prompt_tokens
+        # / completion_tokens, but nothing read it - the operator had no
+        # in-process view of a run's actual token cost.
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def _record_usage(self, response: Any) -> None:
+        """Accumulate usage stats if the provider returned them (mock/local
+        servers may omit the block - absence is not an error)."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        try:
+            self.total_prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+            self.total_completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            logger.debug("Malformed usage block in LLM response; skipped")
+
     async def close(self) -> None:
         """
         Close HTTP client(s).
@@ -103,10 +122,16 @@ class LLMService:
         except OpenAIRateLimitError as e:
             # FIX: HTTP 429 - retryable with backoff, not a fatal LLMError
             raise NetworkError(f"Rate limited by LLM provider (429): {e}") from e
+        except NetworkError:
+            # FIX (1.2): a NetworkError surfacing from the call itself must
+            # reach tenacity as NetworkError - the generic handler below
+            # would re-wrap it into a non-retried LLMError.
+            raise
         except Exception as e:
             raise LLMError(f"LLM request failed: {e}", model_name=self.settings.model_name) from e
 
         self._connection_verified = True
+        self._record_usage(response)
 
         # content = response.choices[0].message.content
 
@@ -203,8 +228,15 @@ class LLMService:
             raise NetworkError(f"API connection error: {e}") from e
         except OpenAIRateLimitError as e:
             raise NetworkError(f"Rate limited by LLM provider (429): {e}") from e
+        except NetworkError:
+            # FIX (1.2): a NetworkError surfacing from the call itself must
+            # reach tenacity as NetworkError - the generic handler below
+            # would re-wrap it into a non-retried LLMError.
+            raise
         except Exception as e:
             raise LLMError(f"LLM request failed: {e}", model_name=self.settings.model_name) from e
+
+        self._record_usage(response)
 
         choices = getattr(response, "choices", [])
         if not choices:

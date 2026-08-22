@@ -11,9 +11,10 @@ Production-grade autonomous browser agent with:
 """
 
 import asyncio
+import json
+import logging
 import signal
 import sys
-import logging
 from pathlib import Path
 
 from pydantic import ValidationError as PydanticValidationError
@@ -21,36 +22,55 @@ from pydantic import ValidationError as PydanticValidationError
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from src.config import load_settings
-from src.core.exceptions import ConfigurationError, AgentCriticalError
-from src.infrastructure import BrowserService, LLMService
 from src.agent import AgentOrchestrator
+from src.config import load_settings
+from src.core.exceptions import AgentCriticalError, ConfigurationError
+from src.infrastructure import BrowserService, LLMService
 
-# Configure basic logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('agent.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+# Configure basic logging.
+# FIX (3.1 structured logging): agent.log is now strict JSON-lines - every
+# line parses with json.loads() - so runs can be ingested/diffed by tooling
+# without regex-parsing human-formatted log text. The console stream keeps
+# the human-readable format; orchestrator._log_step_json() emits one
+# {"run_id", "step", "tool", "success", "duration_ms"} object per step.
+
+
+class JsonLineFormatter(logging.Formatter):
+    def format(self, record):
+        payload = {
+            "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+_file_handler = logging.FileHandler("agent.log")
+_file_handler.setFormatter(JsonLineFormatter())
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 )
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logger = logging.getLogger(__name__)
 
 
 class GracefulShutdown:
     """
     Handle shutdown signals gracefully.
-    
+
     Why needed?
     - SIGINT (Ctrl+C) and SIGTERM must trigger clean browser shutdown
     - Prevents zombie browser processes
     - Ensures resources are released properly
     """
-    
+
     def __init__(self):
         self.shutdown_requested = False
-    
+
     def request_shutdown(self, signum, frame):
         """Signal handler."""
         logger.warning("Shutdown requested... cleaning up")
@@ -61,28 +81,30 @@ class GracefulShutdown:
 async def main() -> int:
     """
     Main async entry point.
-    
+
     Returns:
         Exit code (0 = success, 1 = failure)
     """
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("   BATTLE-READY BROWSER AGENT v4.2")
     print("   Modular Monolith Architecture")
-    print("="*70 + "\n")
-    
+    print("=" * 70 + "\n")
+
     # Setup signal handling
     shutdown = GracefulShutdown()
     signal.signal(signal.SIGINT, shutdown.request_shutdown)
     signal.signal(signal.SIGTERM, shutdown.request_shutdown)
-    
+
     try:
         # Load and validate configuration
         settings = load_settings()
-        logger.info(f"Configuration loaded - Model: {settings.model_name}, Max Steps: {settings.max_steps}")
+        logger.info(
+            f"Configuration loaded - Model: {settings.model_name}, Max Steps: {settings.max_steps}"
+        )
         print("✅ Configuration loaded")
         print(f"   Model: {settings.model_name}")
         print(f"   Max Steps: {settings.max_steps}")
-        print(f"   Stealth: {'Enabled' if settings.enable_stealth else 'Disabled'}")
+        print(f"   Stealth: {'Enabled' if settings.enable_stealth_mode else 'Disabled'}")
 
     except ConfigurationError as e:
         logger.error(f"Configuration Error: {e}")
@@ -104,27 +126,27 @@ async def main() -> int:
             print(f"   - {loc}: {err.get('msg')}")
         print("\nCheck your .env file (see .env.example) and try again.")
         return 1
-    
+
     # Get task from user
-    print("\n" + "-"*70)
+    print("\n" + "-" * 70)
     task = input("📝 Enter task: ").strip()
     if not task:
         print("No task provided")
         return 1
-    
+
     starting_url = input("🌐 Starting URL (optional): ").strip() or None
-    print("-"*70 + "\n")
-    
+    print("-" * 70 + "\n")
+
     # Create services with dependency injection
     browser = BrowserService(settings)
     llm = LLMService(settings)
-    
+
     try:
         # Use context managers for guaranteed cleanup
         async with browser, llm:
             logger.info("Browser and LLM services initialized")
             print("✅ Browser launched\n")
-            
+
             # Create orchestrator
             # FIX (3.1 Major): pass the shutdown flag in so the reasoning
             # loop can actually observe SIGINT/SIGTERM. Previously
@@ -132,8 +154,7 @@ async def main() -> int:
             # never read anywhere - README's "Graceful Shutdown" feature was
             # entirely decorative.
             orchestrator = AgentOrchestrator(
-                settings, browser, llm,
-                shutdown_check=lambda: shutdown.shutdown_requested
+                settings, browser, llm, shutdown_check=lambda: shutdown.shutdown_requested
             )
 
             # FIX (2.2 Major): independent wall-clock ceiling on the whole
@@ -141,34 +162,35 @@ async def main() -> int:
             # catches a thrash pattern.
             try:
                 result = await asyncio.wait_for(
-                    orchestrator.run(task, starting_url),
-                    timeout=settings.max_wall_clock_seconds
+                    orchestrator.run(task, starting_url), timeout=settings.max_wall_clock_seconds
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     f"Task exceeded max wall-clock timeout "
                     f"({settings.max_wall_clock_seconds}s), aborting."
                 )
-                print(f"\n⏱️  TASK ABORTED: exceeded {settings.max_wall_clock_seconds}s wall-clock limit")
+                print(
+                    f"\n⏱️  TASK ABORTED: exceeded {settings.max_wall_clock_seconds}s wall-clock limit"
+                )
                 return 1
-            
+
             # Display result
-            print("\n" + "="*70)
+            print("\n" + "=" * 70)
             if result.success:
                 logger.info(f"Task completed successfully in {result.steps_taken} steps")
                 print("✅ TASK COMPLETED SUCCESSFULLY!")
             else:
                 logger.warning(f"Task failed: {result.summary}")
                 print("❌ TASK FAILED")
-            print("="*70)
+            print("=" * 70)
             print(f"Summary: {result.summary}")
             print(f"Steps: {result.steps_taken}")
             print(f"Duration: {result.total_duration_seconds:.1f}s")
             if result.final_url:
                 print(f"Final URL: {result.final_url}")
-            
+
             return 0 if result.success else 1
-    
+
     except AgentCriticalError as e:
         logger.critical(f"Critical error: {e}", exc_info=True)
         print(f"\n❌ CRITICAL ERROR: {e}")
@@ -177,14 +199,15 @@ async def main() -> int:
         if e.context.get("html_dump_path"):
             print(f"HTML dump saved: {e.context['html_dump_path']}")
         return 1
-    
+
     except Exception as e:
         logger.exception("Unexpected error")
         print(f"\n❌ UNEXPECTED ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
-    
+
     finally:
         print("\n👋 Cleanup complete")
 
