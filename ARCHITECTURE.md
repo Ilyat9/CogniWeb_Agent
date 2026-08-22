@@ -989,3 +989,84 @@ logging.basicConfig(
 
 **Дата обновления**: 2026-01-31  
 **Версия документа**: 2.0
+---
+
+## Фаза 4: Web UI, новые инструменты, stealth-режим
+
+Четыре расширения (Задачи 1–4 фазы 4). Как и прежде: всё через флаги в `Settings`, дефолты не ломают существующее поведение (единственное намеренное исключение — stealth-режим, включён по умолчанию, т.к. не меняет функционального поведения, только надёжность сессии), деградация опциональных зависимостей безопасна (ленивый импорт + один warning за run, паттерн tiktoken).
+
+### Задача 1 — Web UI поверх API (`src/api/app.py`, `src/api/static/`)
+
+**Backend.** Шаги агента публикуются через in-memory pub/sub, а не парсинг `agent.log`: `AgentOrchestrator` принимает опциональный `event_sink` (sync-callback, получает dict-события `started`/`step`/`final`/`captcha`). `create_app(task_runner, settings=None)` строит на этом:
+
+- `GET /tasks` — история задач (id, state, task, summary);
+- `GET /task/{id}/steps` — все события шагов задачи (fallback-канал для клиентов без WebSocket);
+- `WS /ws/task/{id}` — live-стрим: при подключении реплей уже записанных событий, затем новые до `final`;
+- `GET /task/{id}/screenshot` — последний скриншот run'а (из `take_screenshot`-шагов) как файл;
+- `POST /task/{id}/stop` — per-task graceful stop: тот же паттерн `shutdown_check`, что у глобального SIGTERM, но на конкретную задачу (оркестратор выходит на границе следующего шага, сохранив `context_data`); остановка queued-задачи превращает её в `StoppedByUser` без запуска;
+- `GET /config` — текущие настройки с маскированием секретов (`mask_settings`: любое поле с `key/token/secret/password/credential` в имени → `***masked`);
+- `GET /reports`, `GET /reports/{run_id}` — список и содержимое `reports/run_*.json` (run_id валидируется строгим паттерном + resolve-проверка внутри `REPORTS_DIR` — защита от traversal).
+
+TaskRunner остаётся 2-аргументным контрактом: воркер интроспектирует сигнатуру и передаёт `emit=`/`stop_check=` только если раннер их объявил — все существующие тесты и CLI-раннеры работают без изменений.
+
+**Frontend.** Single-file vanilla-JS SPA в `src/api/static/index.html`, отдаётся FastAPI через `StaticFiles(html=True)`, монтируется последним (API-маршруты приоритетнее). Выбор vanilla JS вместо React+Vite/HTMX обоснован: нулевой build-пайплайн, нулевые JS-зависимости, ноль новых backend-зависимостей для статики; WebSocket с polling-fallback на `/steps` покрывает live-прогресс. UI: форма запуска, пошаговый лог (thought/tool/args/status/duration), текущий скриншот + URL, история с детальным просмотром (`tokens_used`, `context_data`), отчёты в человекочитаемом виде (бейджи/таблицы), read-only конфиг, кнопка «Остановить», явный баннер капчи и captcha circuit breaker. Запуск: `make install-ui && make run-ui` (uvicorn на :8000).
+
+### Задача 2 — Расширение набора инструментов (10 новых tools)
+
+Каждый: `Literal` + `valid_tools` + валидация args в `models.py` → метод `BrowserService` → ветка диспетчера в `orchestrator.py` → system prompt → тесты (happy + error). Выбраны по ценности:
+
+| Инструмент | Зачем |
+|---|---|
+| `wait_for_element` | условное ожидание вместо «слепого» `wait(seconds)` — убирает гонки с рендерингом/AJAX (главный источник ложных SelectorError) |
+| `find_element_by_text` | семантический поиск по живому DOM (не только по бюджетно-обрезанному снапшоту) + регистрация свежих `element_id` |
+| `extract_page_content` | очищенный Markdown страницы вместо сырого DOM — экономия 60–80% токенов на задачах чтения (см. Задачу 3) |
+| `extract_structured_data` | таблицы страницы сразу в `context_data[key]` — закрывает сценарий «распарсить список X» одним вызовом |
+| `hover_element` | hover-only контролы (меню, тултипы) |
+| `press_key` | клавиатурные события/комбинации без element_id (Enter/Escape/Tab/Ctrl+A) |
+| `list_tabs` / `switch_tab` | работа с вкладками, открывшимися по target=_blank клику (дополняет `new_page()`/`run_parallel_agents`) |
+| `download_file` | явная обработка Playwright download-события; сохранение в `DOWNLOAD_ALLOWED_DIR`, filename приводится к basename (защита от traversal, аналог `upload_file`) |
+| `go_forward` | симметрия `go_back` |
+
+`request_human_input` из рекомендованного списка сознательно не реализован: human-in-the-loop канал уже существует (captcha-checkpoint: сохранение состояния + ожидание человека + circuit breaker), второй канал дублировал бы его с теми же свойствами.
+
+Произвольный JS-инструмент не добавлялся (расширение поверхности атаки без явной необходимости).
+
+### Задача 3 — Идеи Browser-Use и Crawl4AI (принятые решения реализованы как описано)
+
+**Browser-Use (только визуальное распознавание, без пакета-зависимости, без captcha-solving сервисов).** Существующий vision fallback расширен вторым триггером: после `VISUAL_FALLBACK_ERROR_STREAK` (дефолт 2) подряд идущих шагов с ошибкой `InvalidElementId` следующий шаг переключается на аннотированный скриншот (set-of-marks: рамки с номерами поверх живого DOM через `page.evaluate`-оверлей, номер = тот же `element_id`, что в текстовом режиме; без Pillow/cairosvg). Стрик сбрасывается любым успешным шагом и после успешного vision-шага. Флаг: `ENABLE_VISUAL_FALLBACK` — алиас существовавшего до задачи `ENABLE_VISION_FALLBACK`; его дефолт `true` сохранён без изменений (правило проекта: дефолты существующих фичей не меняются), эффективное поведение по умолчанию всё равно выключено гейтом `MODEL_SUPPORTS_VISION` (дефолт `false`). Пакет `browser-use` НЕ устанавливается (свой оркестратор + своя версия Playwright = конфликт без выгоды). Сторонние платные captcha-сервисы (CapSolver/2captcha/…) не интегрируются: основной путь для показанной капчи не изменился — `CaptchaDetectedError` → checkpoint → ручное решение → circuit breaker (UX ожидания улучшен в Web UI: явный баннер капчи и статус breaker с предложением перезапуска).
+
+**Crawl4AI (подход, обёртка с fallback, без второго браузерного движка).** `extract_page_content` берёт HTML уже открытой Playwright-страницы (`page.content()`) и конвертирует: сначала ленивый импорт `crawl4ai.markdown_generation_strategy.DefaultMarkdownGenerator` (используется ТОЛЬКО как HTML→Markdown конвертер, собственный браузер crawl4ai никогда не запускается), при любой ошибке/отсутствии пакета — встроенный беззависимый эвристический очиститель (`src/utils/extract.py`: снос `<script>/<style>/<nav>/<footer>/<aside>/…`, заголовки → `#`, ссылки → `[text](abs-url)`, списки → `- `, ячейки таблиц → pipe-строки). Флаг `ENABLE_MARKDOWN_EXTRACTION` (дефолт `false`); при выключенном флаге инструмент отвечает явной ошибкой `MarkdownExtractionDisabled`. Опциональная зависимость — `requirements-tools.txt`.
+
+### Задача 4 — Stealth-режим браузера
+
+Цель — снизить ложные срабатывания анти-бот детекции для ЛЕГИТИМНОЙ сессии (меньше лишних капч/блокировок). Это отдельная задача от captcha circuit breaker: здесь про снижение числа ложных срабатываний детекции, не про решение показанной капчи. Никакой обход уже показанного challenge не реализуется.
+
+Реализация в `BrowserService`:
+1. **Init-скрипты** (`context.add_init_script`, применяются ко всем будущим страницам): `navigator.webdriver` → `undefined`, `window.chrome` заглушка, `navigator.languages` согласован с локалью, непустые `navigator.plugins`/`mimeTypes` (Chrome PDF Viewer), WebGL vendor/renderer вместо заглушки headless-рендерера (`ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)`).
+2. **Согласованный профиль контекста**: `STEALTH_USER_AGENT` / `STEALTH_LOCALE` / `STEALTH_TIMEZONE` / `STEALTH_VIEWPORT_*` применяются вместе; `Accept-Language` и `sec-ch-ua-platform` (в `captcha_avoidance_mode`) выводятся из тех же полей. Принцип: рассинхрон фингерпринта — более сильный сигнал детекции, чем «неидеальный, но цельный» профиль; поэтому «рандом ради рандома» не используется.
+3. **playwright-stealth** — опциональная надстройка (ленивый импорт, один warning за run при отсутствии, при ошибке применения — continue): перенесён из базового `requirements.txt` в `requirements-tools.txt`. Встроенные init-скрипты работают и без него.
+4. **Человекоподобное взаимодействие**: клику предшествует малая случайная пауза + многоточечная траектория `page.mouse.move()` с джиттером (не мгновенный прыжок в точные координаты); `type_text` уже вводит посимвольно со случайной задержкой (`TYPING_SPEED_MIN/MAX`). Источник рандома — уже одобренный в `.bandit` (`B311`).
+5. **`ENABLE_STEALTH_MODE`** — единственный новый флаг с дефолтом `true` (старое имя `ENABLE_STEALTH` работает как алиас): функциональное поведение агента не меняется, только надёжность сессии, поэтому включение по умолчанию безопасно; выключение возвращает точное до-stealth поведение запуска (в т.ч. legacy UA в non-persistent ветке) — регрессионный тест это фиксирует.
+
+Тестируется применение патчей на уровне вызовов Playwright API (моки), а не прохождение детекции на живых сайтах (недетерминировано, не для CI).
+
+### Hardening-дополнение (доступ, live-статус, обёртка контента)
+
+**Доступ к API.** `API_BIND_HOST` (дефолт `127.0.0.1`): `make run-ui` читает настройку через `uvicorn.run(..., host=load_settings().api_bind_host)`; Docker `MODE=api` биндит `0.0.0.0` сознательно (иначе порт недостижим с хоста) — задокументировано в Dockerfile. `API_AUTH_TOKEN` (опционально): FastAPI-зависимость `_require_token` вешается на все `/task*`-эндпоинты + `/config`/`/reports`; `/health` свободен (liveness-проби). Токен принимается **только** в заголовке `Authorization: Bearer` — никогда в query-string (URL утекают в access-логи сервера/прокси, историю браузера, Referer). Для WebSocket (браузер не может выставить WS-заголовки) токен НЕ подставляется в URL: UI сначала обменивает его на **одноразовый короткоживущий тикет** через `POST /ws/ticket` (Bearer-защищён, TTL 60с, single-use — `pop()` из store при проверке), и в WS-хендшейк идёт только тикет `?ticket=...`; украденный/реплейнутый тикет бесполезен. UI хранит токен в переменной JS (память вкладки), подставляет в fetch-запросы; скриншоты грузятся blob'ом через fetch, чтобы проходил Bearer.
+
+**on_step-хук.** `AgentOrchestrator(..., on_step=Callable[[int, AgentAction, ActionResult], None])` — по образцу `shutdown_check`; вызывается после каждого исполненного шага (основной путь и JSON-retry-путь), неблокирующий, исключения глотаются. API-воркер передаёт его раннеру (интроспекция сигнатуры, как у emit/stop_check) и пишет `current_step`/`last_tool` в запись задачи — `GET /task/{id}` отдаёт их во время выполнения.
+
+**Path traversal.** `GET /task/{id}/screenshot`: путь из записи резолвится и обязан лежать внутри `SCREENSHOT_DIR` (task_id — только ключ uuid-словаря, но путь всё равно валидируется от подмены). `GET /reports/{run_id}`: строгий `^[A-Za-z0-9_-]{1,64}$` + resolve-проверка внутри `REPORTS_DIR`. Тесты гоняют `../../etc/passwd`-подобные id и путь-вне-директории.
+
+**Новые инструменты.** `assert_page_state` — дешёвая no-LLM проверка (`expect_text_present` / `expect_url_contains` / `expect_element_visible`), провал = обычный `ActionResult(error="AssertionFailed")`, не исключение. `set_variable`/`get_variable` — `scratch_memory` оркестратора, отдельная от `context_data` (финальный результат): промежуточные вычисления не засоряют `TaskResult`; system prompt явно описывает разницу (store_context = финальный результат, set_variable = промежуточное).
+
+**Untrusted-обёртка.** `UNTRUSTED_CONTENT_TOOLS` + `_format_action_result()`: результат любого инструмента, возвращающего текст страницы, попадает в conversation history только внутри `<untrusted_page_content>` — тот же механизм, что у `_get_observation()`; класс закрытой ранее уязвимости не открывается новыми инструментами. Регрессионный тест: malicious-текст через `extract_page_content` остаётся внутри разделителей.
+
+**Regression-guard'ы.** Тест «каждый tool из valid_tools присутствует в system prompt» (защита от «инструмент есть в коде, модель о нём не знает»). `make check-no-captcha-solvers` (в `ci`): grep-гарант отсутствия `2captcha|anti-captcha|capmonster|capsolver|gatesolve` в `src/` и requirements (дублируется pytest-тестом).
+
+**Backlog (зафиксировано, вне скоупа):** ротация `DOWNLOAD_ALLOWED_DIR`; rate-limit уровня API (нужен при `API_BIND_HOST` ≠ 127.0.0.1).
+
+---
+
+**Дата обновления (Фаза 4 + hardening-дополнение)**: 2026-08-22
+**Версия документа**: 2.2

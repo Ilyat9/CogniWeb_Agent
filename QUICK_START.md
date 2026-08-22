@@ -594,3 +594,40 @@ MODEL_NAME=upstage/solar-pro:free
 ---
 
 **Удачи в автоматизации! 🚀**
+---
+
+## 🖥️ Вариант 3: Web UI (Фаза 4)
+
+Работа с агентом через браузер вместо терминала/curl:
+
+```bash
+# 1. Зависимости API + UI (fastapi, uvicorn, websockets)
+make install-ui
+
+# 2. Запуск (UI + API на http://localhost:8000)
+make run-ui
+```
+
+Что умеет UI:
+- запуск задачи (текст + опциональный starting_url);
+- живой пошаговый прогресс (WebSocket, с автоматическим fallback на polling);
+- текущий скриншот и URL страницы;
+- история задач с детальным просмотром результата (`tokens_used`, `context_data`);
+- отчёты по запускам в человекочитаемом виде;
+- кнопка «Остановить» (graceful, per-task);
+- явный баннер капчи и captcha circuit breaker с предложением перезапуска;
+- read-only просмотр активной конфигурации (секреты маскированы).
+
+Доступ (см. .env.example, секция «Web UI / API access control»): по умолчанию
+сервер слушает только `127.0.0.1` (`API_BIND_HOST`). Для доступа с других машин
+задайте `API_BIND_HOST` и обязательно `API_AUTH_TOKEN` (Bearer; поле для токена —
+справа вверху в UI, хранится только в памяти вкладки). `/health` всегда открыт.
+
+Опциональные улучшения (не обязательны для UI):
+```bash
+make install-tools   # playwright-stealth (полный набор патчей) + crawl4ai (качественнее Markdown)
+```
+
+Docker: `docker build --build-arg MODE=api --build-arg TOOLS=true -t cogniweb-agent:ui .`
+
+> ⚠️ Контейнер с `MODE=api` биндит `0.0.0.0` (иначе `-p 8000:8000` не работал бы). При публикации порта наружу обязательно задайте `API_AUTH_TOKEN` — `API_BIND_HOST` тут не защита (см. README → Docker).

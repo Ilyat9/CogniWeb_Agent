@@ -66,7 +66,7 @@ temperature = 0.1  # Детерминированность → меньше о�
 
 **Чего НЕТ осознанно:**
 - ❌ Evaluator Pattern (self-critique) — это **optimization**, не **requirement** для MVP
-- ❌ Интеграция с 2captcha — можно добавить за 1 день при необходимости
+- ❌ Автосолвинг капч (2captcha/anti-captcha, audio-challenge + Whisper, solver-расширения) — осознанно НЕ реализуется, не техдолг: капча — барьер доступа, поставленный целевым сайтом; автообход нарушает его ToS, а решение audio-challenge автоматизацией абьюзит accessibility-фичу, предназначенную для людей. Вместо этого: L0 avoidance (`CAPTCHA_AVOIDANCE_MODE` — снижает частоту появления капчи, не решает её) + L2 human-in-the-loop с checkpoint (`./checkpoints/captcha_*.json` сохраняет task/history/context_data/url/step; неблокирующий `run_in_executor` вместо `input()` в event loop; `quit` для graceful-выхода с сохранённым прогрессом).
 - ❌ Динамический token counting — KISS principle для 99% сценариев
 
 **Приоритеты:** Фокус на создании стабильного ядра и CI/CD процессов. Дополнительные фичи (Evaluator, Anti-Captcha) вынесены в Roadmap как логическое продолжение развития системы.
