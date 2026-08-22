@@ -2,7 +2,7 @@
 # CogniWeb Agent - Makefile
 # ==============================================================================
 
-.PHONY: help install install-dev test test-verbose test-coverage lint format clean docker-build docker-run docker-clean run dev
+.PHONY: help install install-dev install-tools install-ui test test-verbose test-coverage lint format clean docker-build docker-run docker-clean run dev run-ui check-no-captcha-solvers
 
 # Переменные
 PYTHON := python3
@@ -45,6 +45,16 @@ install-dev: install ## Установить dev зависимости (тес�
 	playwright install --with-deps chromium
 	@echo "$(GREEN)✓ Development environment ready!$(RESET)"
 
+install-tools: ## Установить опциональные tools-зависимости (stealth+, crawl4ai)
+	@echo "$(CYAN)Installing optional tools dependencies...$(RESET)"
+	$(PIP) install -r requirements-tools.txt
+	@echo "$(GREEN)✓ Optional tools installed (lazy imports will pick them up)$(RESET)"
+
+install-ui: ## Установить зависимости API + Web UI (fastapi/uvicorn/websockets)
+	@echo "$(CYAN)Installing API + Web UI dependencies...$(RESET)"
+	$(PIP) install -r requirements-ui.txt
+	@echo "$(GREEN)✓ API + UI dependencies installed (make run-ui)$(RESET)"
+
 # ==============================================================================
 # Запуск приложения
 # ==============================================================================
@@ -55,6 +65,19 @@ run: ## Запустить агента (main.py)
 dev: ## Запустить в dev режиме (с DEBUG_MODE=true)
 	@echo "$(CYAN)Starting agent in development mode...$(RESET)"
 	DEBUG_MODE=true HEADLESS=false $(PYTHON) main.py
+
+run-ui: ## Запустить API + Web UI (uvicorn + static UI, хост из API_BIND_HOST)
+	@echo "$(CYAN)Starting CogniWeb Agent API + Web UI...$(RESET)"
+	@echo "$(CYAN)  UI: http://localhost:8000  (требует: make install-ui)$(RESET)"
+	$(PYTHON) -c "from src.config import load_settings; import uvicorn; s = load_settings(); print(f'Binding to {s.api_bind_host}:8000 (API_BIND_HOST)'); uvicorn.run('src.api.app:build_default_app', factory=True, host=s.api_bind_host, port=8000)"
+
+check-no-captcha-solvers: ## Гвард: платные капча-солверы не протащены в код/зависимости
+	@echo "$(CYAN)Checking for captcha-solver services in src/ and requirements...$(RESET)"
+	@if grep -riE "2captcha|anti-captcha|capmonster|capsolver|gatesolve" src/ requirements*.txt; then \
+		echo "$(RED)✗ Found a captcha-solver reference - this project does not integrate paid captcha solving$(RESET)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ No captcha-solver services detected$(RESET)"
 
 # ==============================================================================
 # Тестирование
@@ -106,7 +129,7 @@ type-check: ## Проверка типов (mypy)
 security-check: ## Проверка безопасности зависимостей
 	@echo "$(CYAN)Checking for security vulnerabilities...$(RESET)"
 	safety check
-	bandit -r src/ -f screen
+	bandit -r src/ -c .bandit -f screen
 
 # ==============================================================================
 # Docker
@@ -195,7 +218,7 @@ update-deps: ## Обновить requirements.txt до последних вер
 # ==============================================================================
 # CI/CD эмуляция
 # ==============================================================================
-ci: lint test-coverage security-check ## Эмуляция CI пайплайна локально
+ci: lint test-coverage security-check check-no-captcha-solvers ## Эмуляция CI пайплайна локально
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════$(RESET)"
 	@echo "$(GREEN)✓ All CI checks passed!$(RESET)"

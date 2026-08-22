@@ -1,0 +1,26 @@
+# Bandit configuration (YAML, passed via `bandit -c .bandit`).
+# Baseline-accepted findings with rationale - triaged rather than silenced
+# inline:
+#
+# B105  false positive: token_counter_mode == "tiktoken" is a mode string,
+#       not a password (bandit keys off the "token" in the attribute name)
+# B112  try/except/continue in DOM overlay dismissal / option scanning -
+#       best-effort UI fallbacks where continuing on error is the point
+# B311  random.* is used for human-like typing delays and mouse warmup,
+#       not for any security/cryptographic purpose
+# B324  md5 in ObservationState.state_hash is a loop-detection cache key,
+#       not a security hash
+# B404/B603/B606/B607 subprocess opens the captcha screenshot in the OS
+#       viewer (open/xdg-open/os.startfile) with fixed, non-user arguments
+# B608  SQL-looking string flagged in page JS/selector building - no SQL
+#       is executed anywhere in this codebase
+skips:
+  - B105
+  - B112
+  - B311
+  - B324
+  - B404
+  - B603
+  - B606
+  - B607
+  - B608

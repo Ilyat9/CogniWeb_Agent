@@ -19,12 +19,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Установка рабочей директории
 WORKDIR /app
 
-# Копирование requirements.txt для кэширования слоя
-COPY requirements.txt /app/requirements.txt
+# Копирование requirements для кэширования слоя
+COPY requirements.txt requirements-api.txt requirements-ui.txt requirements-tools.txt /app/
+
+# MODE=api ставит fastapi/uvicorn/websockets (extra [ui], включает [api]);
+# MODE=cli (по умолчанию) ограничивается базовым requirements.txt.
+# TOOLS=true дополнительно ставит опциональные tools-зависимости
+# (playwright-stealth, crawl4ai) - лениво импортируемые улучшения.
+ARG MODE=cli
+ARG TOOLS=false
 
 # Установка Python зависимостей (как root)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r /app/requirements.txt
+    if [ "$MODE" = "api" ]; then \
+        pip install --no-cache-dir -r /app/requirements-ui.txt; \
+    else \
+        pip install --no-cache-dir -r /app/requirements.txt; \
+    fi && \
+    if [ "$TOOLS" = "true" ]; then \
+        pip install --no-cache-dir -r /app/requirements-tools.txt; \
+    fi
 
 # Установка Playwright браузеров БЕЗ --with-deps (системные зависимости уже есть)
 RUN python3 -m playwright install chromium
@@ -52,17 +66,26 @@ ENV PYTHONUNBUFFERED=1 \
     SCREENSHOT_DIR=/app/screenshots \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+# MODE (cli по умолчанию / api) пробрасывается в ENV, чтобы точка входа
+# могла выбрать режим во время запуска контейнера.
+ARG MODE=cli
+ENV MODE=${MODE}
 
-# Точка входа
-ENTRYPOINT ["python"]
-CMD ["main.py"]
+# HEALTHCHECK: в MODE=api действительно проверяет /health (drain после
+# SIGTERM корректно даёт 503 -> unhealthy). В MODE=cli скрипт сразу
+# выходит 0 - batch-агент выполняет задачу и завершается, осмысленной
+# проверки "жив/готов" для него нет, а декоративный always-true healthcheck
+# хуже отсутствия (оркестратор считает зависший процесс здоровым).
+EXPOSE 8000
 
-# ==============================================================================
-# Исправления:
-# 1. ✅ Браузеры устанавливаются под root, приложение запускается под agentuser
-# 2. ✅ Нет жестко заданных UID/GID 1000 - используется автоматическое назначение
-# 3. ✅ Используется базовый образ Playwright + команда БЕЗ --with-deps
-# ==============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s \
+    CMD ["python", "docker-healthcheck.py"]
+
+# Точка входа: MODE=api поднимает uvicorn-сервис, иначе обычный CLI main.py.
+# NOTE (hardening): --host 0.0.0.0 здесь - СОЗНАТЕЛЬНОЕ решение оператора
+# при публикации портов контейнера (-p 8000:8000); localhost-биндинг
+# внутри контейнера был бы недостижим с хоста. Локальный запуск БЕЗ Docker
+# использует безопасный дефолт API_BIND_HOST=127.0.0.1 (см. make run-ui).
+# При публикации порта наружу обязательно задайте API_AUTH_TOKEN.
+ENTRYPOINT ["sh", "-c"]
+CMD ["if [ \"$MODE\" = \"api\" ]; then exec python -m uvicorn src.api.app:build_default_app --factory --host 0.0.0.0 --port 8000; else exec python main.py; fi"]

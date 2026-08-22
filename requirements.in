@@ -1,7 +1,8 @@
 # ============================================================================
-# Battle-Ready Browser Agent v2.0 - Requirements
+# CogniWeb Agent - Direct dependencies (compile with pip-compile)
 # ============================================================================
-# Production-grade dependencies with version pinning for stability
+# requirements.txt is generated from this file via `make update-deps`
+# (pip-compile --generate-hashes requirements.in -o requirements.txt).
 # ============================================================================
 
 # Core Dependencies
