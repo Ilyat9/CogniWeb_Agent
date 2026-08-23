@@ -99,6 +99,12 @@ class TestStealthSettings:
         (not as an exported env var) - the alias must work through the
         dotenv source too, or existing .env files would silently stop
         disabling/enabling stealth."""
+        # Real env vars outrank the dotenv source in pydantic-settings, and
+        # CI exports MODEL_NAME at the job level - scrub them or this test
+        # would verify env-var priority instead of the .env alias path it
+        # exists for (and fail outright once that exported value is invalid).
+        for var in ("MODEL_NAME", "OPENAI_API_KEY", "API_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text(
             "OPENAI_API_KEY=sk-test-key-not-real\n"

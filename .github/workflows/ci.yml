@@ -100,7 +100,7 @@ jobs:
         env:
           OPENAI_API_KEY: "sk-test-key-for-ci-not-real"
           API_BASE_URL: "https://api.test.com/v1"
-          MODEL_NAME: "test-model"
+          MODEL_NAME: "test-provider/test-model"
           HEADLESS: "true"
         run: |
           python -m pytest tests/ \
@@ -210,8 +210,11 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
       
       - name: Test Docker image
+        # The image's ENTRYPOINT is ["sh", "-c"], so the whole command must
+        # arrive as ONE CMD string - a bare "--version" would be parsed by
+        # sh itself ("Illegal option --", exit 2) and never reach main.py.
         run: |
-          docker run --rm cogniweb-agent:${{ github.sha }} --version
+          docker run --rm cogniweb-agent:${{ github.sha }} "python main.py --version"
 
   # ==========================================================================
   # JOB 5: Notify on Success/Failure
