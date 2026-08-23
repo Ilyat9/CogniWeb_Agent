@@ -6,126 +6,75 @@
 <title>CogniWeb Agent — Web UI</title>
 <link rel="stylesheet" href="organic.css">
 <style>
-  /* Page-specific layer on top of the Organic design system (organic.css):
-     only composition and app widgets live here, every token comes from the system. */
+  /* Verbatim port of the approved mockup ("CogniWeb Agent Mockup —
+     standalone"). Markup and inline styles below are copied 1:1 from it;
+     this block only holds what the mockup got from its image-slot
+     component plus purely functional helpers. */
   body { margin: 0; background: var(--color-bg); color: var(--color-text); }
   a { color: var(--color-accent-700); }
   a:hover { color: var(--color-accent-900); }
-
-  main { max-width: 1120px; margin: 0 auto; padding: var(--space-6) var(--space-4) var(--space-8); }
   .hidden { display: none !important; }
-
-  /* — nav — */
-  .nav { padding-right: 20px; }
-  .nav .nav-brand { margin-right: 0; }
-  .nav-link {
-    color: var(--color-text); opacity: .55; text-decoration: none; font-size: 14px;
-    border-bottom: 2px solid transparent; padding: 8px 4px 6px;
-  }
-  .nav-link:hover { opacity: .85; }
-  .nav-link.active {
-    opacity: 1; font-weight: 700;
-    border-bottom-color: var(--color-accent);
-  }
-  #api-token { margin-left: auto; max-width: 170px; height: 34px; padding: 4px 12px; font-size: 13px; }
-
-  /* — section heads (mockup's demo-head) — */
-  .section-head {
-    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-    opacity: .55; margin: 0 0 var(--space-2);
-  }
-
-  /* — new task card — */
-  .task-grid { display: grid; grid-template-columns: 1.7fr .6fr; gap: var(--space-6); align-items: start; }
-  #task-input { width: 100%; padding: 12px 16px; font-size: 15px; font-weight: 400; line-height: 1.5; resize: vertical; }
-  .shot-slot {
-    width: 100%; aspect-ratio: 409 / 254; margin-top: var(--space-2);
-    background: var(--color-neutral-100); border-radius: var(--radius-md);
-    display: grid; place-items: center; overflow: hidden; position: relative;
-    color: color-mix(in srgb, var(--color-text) 55%, transparent); font-size: 13px;
-  }
-  /* Screenshot stays un-washed on purpose: the operator reads it to solve captchas. */
-  #screenshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  #submit-error { color: var(--color-accent-800); font-size: 13px; margin-left: var(--space-3); }
-
-  /* — live task card — */
-  .toolbar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
-  .toolbar .card-title .task-id { font-family: ui-monospace, monospace; font-size: 12px; opacity: .55; }
-  #live-url { font-family: ui-monospace, monospace; font-size: 12px; opacity: .6; word-break: break-all; }
-  .banner {
-    display: flex; gap: 10px; align-items: flex-start;
-    background: var(--color-accent-100); color: var(--color-accent-800);
-    border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4);
-    margin-bottom: var(--space-4); font-weight: 600;
-  }
-  .banner svg { flex: none; margin-top: 2px; }
-  .banner.captcha-breaker { background: var(--color-accent-200); color: var(--color-accent-900); }
-
-  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); max-height: 480px; overflow-y: auto; }
-  .steps li { background: var(--color-neutral-100); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
-  .steps li.error { background: var(--color-accent-100); }
-  .step-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-  .step-head .n { font-weight: 700; opacity: .5; font-size: 12px; }
-  .step-head .tool { font-family: ui-monospace, monospace; font-size: 12px; }
-  .step-head .ms { margin-left: auto; font-size: 12px; opacity: .55; }
-  .thought { opacity: .65; font-style: italic; margin: 4px 0 0; font-size: 13px; }
-  .step-msg { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; opacity: .8; }
-
-  /* — result — */
-  .result-grid { margin-top: var(--space-6); display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); align-items: start; }
-  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; }
-  .kv .k { opacity: .6; font-size: 13px; }
-  .kv .v { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
-  pre.json {
-    background: var(--color-neutral-900); color: var(--color-neutral-100);
-    padding: 12px; border-radius: var(--radius-md); overflow: auto; max-height: 360px;
-    font-size: 12px; font-family: ui-monospace, monospace; margin: 0; white-space: pre-wrap; word-break: break-word;
-  }
-
-  /* — tables / split — */
-  .split { display: grid; grid-template-columns: 1fr 1.2fr; gap: var(--space-4); align-items: start; }
   .muted { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
-  td.mono, .mono { font-family: ui-monospace, monospace; font-size: 12px; }
   tr.clickable { cursor: pointer; }
-  .card-note { opacity: .6; font-size: 13px; margin: 0 0 var(--space-3); }
+
+  /* Screenshot slot — clone of the mockup's <image-slot shape="rounded"
+     radius="16"> empty state: dashed ring + centered icon/caption. */
+  .shot-slot { position: relative; color: var(--color-text); }
+  .shot-ring {
+    position: absolute; inset: 0; pointer-events: none;
+    border: 1.5px dashed currentColor; opacity: .35; border-radius: 16px;
+  }
+  .shot-empty {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    text-align: center; padding: 12px; box-sizing: border-box;
+  }
+  .shot-empty svg { opacity: .45 }
+  .shot-empty .cap { max-width: 90%; font-weight: 500; letter-spacing: .01em; font-size: 13px; opacity: .55 }
+  .shot-slot.filled .shot-ring, .shot-slot.filled .shot-empty { display: none; }
+  #screenshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 16px; }
+
+  /* Long real runs need scrolling; invisible for the mockup's 6 sample steps. */
+  #steps-list { max-height: 560px; overflow-y: auto; }
 
   @media (max-width: 900px) {
-    .task-grid, .split, .result-grid { grid-template-columns: 1fr; }
+    .task-grid, .split, #result-panel { grid-template-columns: 1fr !important; }
   }
 </style>
 </head>
 <body>
 
-<nav class="nav">
+<nav class="nav" style="padding-right:20px;">
   <span class="nav-brand">CogniWeb Agent</span>
-  <a href="#" class="nav-link active" data-tab="run">Задача</a>
-  <a href="#" class="nav-link" data-tab="history">История</a>
-  <a href="#" class="nav-link" data-tab="reports">Отчёты</a>
-  <a href="#" class="nav-link" data-tab="config">Настройки</a>
-  <input class="input" type="password" id="api-token" placeholder="API токен"
+  <span id="nav-links" style="display:contents;"></span>
+  <input class="input" type="password" id="api-token" placeholder="API токен" style="margin-left:auto;max-width:170px;height:34px;padding:4px 12px;font-size:13px;"
          title="API_AUTH_TOKEN сервера. Хранится только в памяти вкладки (не localStorage), вводится заново после перезагрузки.">
 </nav>
-<main>
+<main style="max-width:1120px;margin:0 auto;padding:var(--space-6) var(--space-4) var(--space-8);">
 
 <!-- ============ TAB: запуск задачи + живой прогресс ============ -->
 <section id="tab-run">
-  <div class="card" id="task-form-card" style="margin-bottom:var(--space-4);">
-    <div class="task-grid">
+  <div class="card" style="margin-bottom:var(--space-4);">
+    <div class="task-grid" style="display:grid;grid-template-columns:1.7fr .6fr;gap:var(--space-6);align-items:start;">
       <div class="card-kicker" style="margin:0;">Новая задача</div>
-      <div class="section-head" style="margin:0;">Состояние страницы</div>
+      <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin:0;">Состояние страницы</div>
       <div>
         <div class="field"><label for="task-input">Текст задачи</label>
-          <textarea class="input" id="task-input" rows="3"
-            placeholder="Например: найди 5 вакансий Python-разработчика и сохрани названия компаний"></textarea></div>
+          <textarea class="input" id="task-input" rows="3" placeholder="Например: найди 5 вакансий Python-разработчика и сохрани названия компаний"
+            style="width:100%;box-sizing:border-box;padding:12px 16px;font-size:15px;font-weight:400;text-align:left;line-height:1.5;border-radius:var(--radius-md);resize:vertical;"></textarea></div>
         <div class="field"><label for="url-input">Starting URL (необязательно)</label>
-          <input class="input" type="text" id="url-input" placeholder="https://example.com"></div>
+          <input class="input" id="url-input" placeholder="https://hh.ru"></div>
         <button type="button" class="btn btn-primary" id="submit-btn" style="margin-top:var(--space-3);">Запустить
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg></button>
-        <span id="submit-error"></span>
+        <span id="submit-error" style="color:var(--color-accent-800);font-size:13px;margin-left:var(--space-3);"></span>
       </div>
       <div>
-        <div class="shot-slot" id="shot-slot">
-          <span id="no-screenshot">Скриншот появится после take_screenshot</span>
+        <div class="shot-slot" id="shot-slot" style="width:409px;height:254px;max-width:100%;margin-top:var(--space-2);">
+          <div class="shot-ring"></div>
+          <div class="shot-empty">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+            <div class="cap">Скриншот появится после take_screenshot</div>
+          </div>
           <img id="screenshot" alt="Скриншот страницы" src="" style="display:none;">
         </div>
       </div>
@@ -133,26 +82,26 @@
   </div>
 
   <div class="card hidden" id="live-card">
-    <div class="toolbar">
-      <div class="card-title" style="margin:0;">Задача <span class="task-id" id="live-task-id"></span></div>
+    <div style="display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-3);">
+      <div class="card-title" style="margin:0;">Задача <span id="live-task-id" style="font-family:ui-monospace,monospace;font-size:12px;opacity:.55;"></span></div>
       <span class="tag tag-neutral" id="live-state">queued</span>
-      <span id="live-url"></span>
+      <span id="live-url" style="font-family:ui-monospace,monospace;font-size:12px;opacity:.6;"></span>
       <button type="button" class="btn btn-secondary btn-icon" id="stop-btn" aria-label="Остановить" title="Остановить" style="margin-left:auto;">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect></svg></button>
     </div>
     <div id="captcha-banner"></div>
     <div>
-      <div class="section-head">Шаги</div>
-      <ol class="steps" id="steps-list"></ol>
+      <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin-bottom:var(--space-2);">Шаги</div>
+      <ol id="steps-list" style="list-style:none;margin:0;padding:0;display:grid;gap:var(--space-2);"></ol>
 
-      <div class="result-grid hidden" id="result-panel">
+      <div class="hidden" id="result-panel" style="margin-top:var(--space-4);display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4);">
         <div>
-          <div class="section-head">Результат</div>
-          <div class="kv" id="result-kv"></div>
+          <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin-bottom:var(--space-2);">Результат</div>
+          <div id="result-kv" style="display:grid;grid-template-columns:130px 1fr;gap:6px 12px;"></div>
         </div>
         <div>
-          <div class="section-head">context_data</div>
-          <pre class="json" id="result-context">—</pre>
+          <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin-bottom:var(--space-2);">context_data</div>
+          <pre id="result-context" style="background: var(--color-neutral-900); color: var(--color-neutral-100); padding: 12px; border-radius: var(--radius-md); overflow-x: auto; font-size: 12px; font-family: ui-monospace,monospace; margin: 0;">—</pre>
         </div>
       </div>
     </div>
@@ -167,7 +116,7 @@
       <thead><tr><th>ID</th><th>Задача</th><th>Статус</th><th>Итог</th><th>Шаги</th><th>Отправлена</th></tr></thead>
       <tbody id="history-body"><tr><td colspan="6" class="muted">Загрузка…</td></tr></tbody>
     </table>
-    <button type="button" class="btn btn-ghost" id="history-refresh">
+    <button type="button" class="btn btn-ghost" id="history-refresh" style="margin-top:var(--space-3);">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
       Обновить</button>
   </div>
@@ -177,13 +126,13 @@
 <section id="tab-reports" class="hidden">
   <div class="card">
     <div class="card-kicker">Отчёты по запускам</div>
-    <div class="split">
+    <div class="split" style="display:grid;grid-template-columns:1fr 1.2fr;gap:var(--space-4);">
       <div>
         <table class="table">
           <thead><tr><th>run_id</th><th>Размер</th></tr></thead>
           <tbody id="reports-body"><tr><td colspan="2" class="muted">Загрузка…</td></tr></tbody>
         </table>
-        <button type="button" class="btn btn-ghost" id="reports-refresh">
+        <button type="button" class="btn btn-ghost" id="reports-refresh" style="margin-top:var(--space-3);">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
           Обновить</button>
       </div>
@@ -196,12 +145,12 @@
 <section id="tab-config" class="hidden">
   <div class="card">
     <div class="card-kicker">Активная конфигурация</div>
-    <p class="card-note">GET /config — секреты маскированы</p>
+    <p style="opacity:.6;font-size:13px;margin:0 0 var(--space-3);">GET /config — секреты маскированы</p>
     <table class="table">
       <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
       <tbody id="config-body"><tr><td colspan="2" class="muted">Загрузка…</td></tr></tbody>
     </table>
-    <button type="button" class="btn btn-ghost" id="config-refresh">
+    <button type="button" class="btn btn-ghost" id="config-refresh" style="margin-top:var(--space-3);">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg>
       Обновить</button>
   </div>
@@ -216,7 +165,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
-const ICON_ROBOT = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>';
+const ICON_ROBOT = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px;"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>';
 
 // API_AUTH_TOKEN support: kept ONLY in a JS variable for the lifetime of
 // the tab (operator's read-only tool - no localStorage persistence, the
@@ -241,36 +190,57 @@ async function api(path, opts) {
   return resp.json();
 }
 
-function setStateBadge(el, state, success) {
-  if (state === "finished") {
-    el.textContent = success ? "finished ✓" : "finished ✗";
-    el.className = success ? "tag tag-accent-2" : "tag tag-accent";
-  } else if (state === "running") {
-    el.textContent = state;
-    el.className = "tag tag-outline";
-  } else {
-    el.textContent = state;
-    el.className = "tag tag-neutral";
-  }
-}
+// ---------- nav (style strings verbatim from the mockup's renderVals) ----------
+const TABS = [
+  { key: "run", label: "Задача" },
+  { key: "history", label: "История" },
+  { key: "reports", label: "Отчёты" },
+  { key: "config", label: "Настройки" },
+];
+let activeTab = "run";
 
-// ---------- tabs ----------
-document.querySelectorAll(".nav-link").forEach((link) => {
-  link.addEventListener("click", (e) => {
-    e.preventDefault();
-    document.querySelectorAll(".nav-link").forEach((l) => l.classList.remove("active"));
-    link.classList.add("active");
-    ["run", "history", "reports", "config"].forEach((t) =>
-      $("tab-" + t).classList.toggle("hidden", t !== link.dataset.tab));
-    if (link.dataset.tab === "history") loadHistory();
-    if (link.dataset.tab === "reports") loadReports();
-    if (link.dataset.tab === "config") loadConfig();
+function renderNav() {
+  const box = $("nav-links");
+  box.innerHTML = "";
+  TABS.forEach((t) => {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = t.label;
+    a.style.cssText = activeTab === t.key
+      ? "color:var(--color-text);border-bottom:2px solid var(--color-accent);padding:8px 4px 6px;text-decoration:none;font-weight:700;"
+      : "color:var(--color-text);opacity:.55;border-bottom:2px solid transparent;padding:8px 4px 6px;text-decoration:none;";
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      activeTab = t.key;
+      renderNav();
+      TABS.forEach((x) => $("tab-" + x.key).classList.toggle("hidden", x.key !== activeTab));
+      if (activeTab === "history") loadHistory();
+      if (activeTab === "reports") loadReports();
+      if (activeTab === "config") loadConfig();
+    });
+    box.appendChild(a);
   });
-});
+}
+renderNav();
 
-// ---------- live task view ----------
-let liveTask = null;   // {id, ws, pollTimer, steps: Set}
+// ---------- live task view (real mode) ----------
+let liveTask = null;   // {id, ws, pollTimer}
 const seenSteps = new Set();
+
+function stepLi(s, ok) {
+  const li = document.createElement("li");
+  li.style.cssText = "background:var(--color-neutral-100);border-radius:var(--radius-md);padding:var(--space-2) var(--space-3);";
+  li.innerHTML = `
+    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">
+      <span style="font-weight:700;opacity:.5;font-size:12px;">#${s.n}</span>
+      <span class="tag tag-neutral" style="font-family:ui-monospace,monospace;font-size:12px;">${esc(s.tool)}</span>
+      <span class="tag ${ok ? "tag-accent-2" : "tag-accent"}">${ok ? "ok" : "error"}</span>
+      <span style="margin-left:auto;font-size:12px;opacity:.55;">${s.ms != null ? s.ms + " ms" : ""}</span>
+    </div>
+    ${s.thought ? `<div style="opacity:.65;font-style:italic;margin:4px 0 0;font-size:13px;">${esc(s.thought)}</div>` : ""}
+    ${s.msg ? `<div style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;margin:4px 0 0;opacity:.8;">${esc(s.msg)}</div>` : ""}`;
+  return li;
+}
 
 function openLiveView(taskId) {
   liveTask = { id: taskId, ws: null, pollTimer: null };
@@ -284,7 +254,7 @@ function openLiveView(taskId) {
   $("stop-btn").disabled = false;
   $("live-url").textContent = "";
   resetScreenshot();
-  document.querySelector('[data-tab="run"]').click();
+  document.querySelector("#nav-links a").click();
   connectWs(taskId).catch(() => startPolling(taskId));
 }
 
@@ -346,45 +316,41 @@ function handleEvent(ev) {
     if (ev.tool === "captcha") {
       const breaker = ev.event === "captcha_circuit_breaker";
       $("captcha-banner").innerHTML =
-        `<div class="banner ${breaker ? "captcha-breaker" : ""}">${ICON_ROBOT}<span>${breaker
+        `<div style="display:flex;gap:10px;align-items:flex-start;background:var(--color-accent-${breaker ? "200" : "100"});color:var(--color-accent-${breaker ? "900" : "800"});border-radius:var(--radius-lg);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-weight:600;">${ICON_ROBOT}<span>${breaker
           ? "Captcha circuit breaker: задача остановлена после серии капч. Решите капчу вручную и перезапустите задачу."
           : "Обнаружена капча — требуется ручное решение. Agent ждёт, checkpoint сохранён."}</span></div>`;
       return;
     }
     if (ev.event === "evaluator_rejected") {
-      appendStep({ step: ev.step, tool: "evaluator", success: false,
-        message: "Само-проверка отклонила 'done': " + (ev.tool || ""), duration_ms: ev.duration_ms });
+      $("steps-list").appendChild(stepLi({ n: ev.step, tool: "evaluator", ms: ev.duration_ms, thought: "",
+        message: "Само-проверка отклонила 'done': " + (ev.tool || "") }, false));
+      $("steps-list").scrollTop = $("steps-list").scrollHeight;
       return;
     }
-    appendStep(ev);
+    $("steps-list").appendChild(stepLi(ev, ev.success !== false));
+    $("steps-list").scrollTop = $("steps-list").scrollHeight;
     if (ev.url) $("live-url").textContent = ev.url;
     if (ev.screenshot_path) refreshScreenshot();
   }
 }
 
-function appendStep(ev) {
-  const li = document.createElement("li");
-  li.className = ev.success ? "" : "error";
-  const args = ev.args && Object.keys(ev.args).length
-    ? `<div class="step-msg" style="opacity:.55;">${esc(JSON.stringify(ev.args)).slice(0, 160)}</div>` : "";
-  li.innerHTML = `
-    <div class="step-head">
-      <span class="n">#${ev.step ?? "—"}</span>
-      <span class="tag tag-neutral tool">${esc(ev.tool || "?")}</span>
-      <span class="tag ${ev.success ? "tag-accent-2" : "tag-accent"}">${ev.success ? "ok" : "error"}</span>
-      <span class="ms">${ev.duration_ms != null ? ev.duration_ms + " ms" : ""}</span>
-    </div>
-    ${ev.thought ? `<div class="thought">${esc(ev.thought)}</div>` : ""}
-    ${args}
-    ${ev.message ? `<div class="step-msg">${esc(ev.message).slice(0, 1200)}</div>` : ""}`;
-  $("steps-list").appendChild(li);
-  $("steps-list").scrollTop = $("steps-list").scrollHeight;
+function setStateBadge(el, state, success) {
+  if (state === "finished") {
+    el.textContent = success ? "finished ✓" : "finished ✗";
+    el.className = success ? "tag tag-accent-2" : "tag tag-accent";
+  } else if (state === "running") {
+    el.textContent = state;
+    el.className = "tag tag-outline";
+  } else {
+    el.textContent = state;
+    el.className = "tag tag-neutral";
+  }
 }
 
 function resetScreenshot() {
   $("screenshot").style.display = "none";
   $("screenshot").removeAttribute("src");
-  $("no-screenshot").style.display = "";
+  $("shot-slot").classList.remove("filled");
 }
 
 async function refreshScreenshot() {
@@ -398,7 +364,7 @@ async function refreshScreenshot() {
     const img = $("screenshot");
     img.src = URL.createObjectURL(blob);
     img.style.display = "";
-    $("no-screenshot").style.display = "none";
+    $("shot-slot").classList.add("filled");
   } catch (e) { /* keep placeholder */ }
 }
 
@@ -414,7 +380,7 @@ function renderResult(result) {
     ["Ошибка", result.error || "—"],
   ];
   $("result-kv").innerHTML = rows.map(([k, v]) =>
-    `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`).join("");
+    `<div style="opacity:.6;font-size:13px;">${esc(k)}</div><div style="font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;">${esc(v)}</div>`).join("");
   $("result-context").textContent = result.context_data && Object.keys(result.context_data).length
     ? JSON.stringify(result.context_data, null, 2) : "—";
 }
@@ -458,7 +424,7 @@ async function loadHistory() {
         ? `<span class="tag ${t.success ? "tag-accent-2" : "tag-accent"}">finished ${t.success ? "✓" : "✗"}</span>`
         : `<span class="tag ${t.state === "running" ? "tag-outline" : "tag-neutral"}">${t.state}</span>`;
       tr.innerHTML = `
-        <td class="mono">${esc(t.task_id.slice(0, 10))}…</td>
+        <td style="font-family:ui-monospace,monospace;font-size:12px;">${esc(t.task_id.slice(0, 10))}…</td>
         <td>${esc((t.task || "").slice(0, 80))}</td>
         <td>${badge}</td>
         <td style="opacity:.7;">${esc((t.summary || t.error || "—").slice(0, 60))}</td>
@@ -481,7 +447,7 @@ async function openHistoryDetail(taskId) {
   $("stop-btn").disabled = true;
   $("result-panel").classList.add("hidden");
   resetScreenshot();
-  document.querySelector('[data-tab="run"]').click();
+  document.querySelector("#nav-links a").click();
   const [status, stepsData] = await Promise.all([
     api(`/task/${taskId}`), api(`/task/${taskId}/steps`),
   ]);
@@ -501,7 +467,7 @@ async function loadReports() {
     data.reports.forEach((r) => {
       const tr = document.createElement("tr");
       tr.className = "clickable";
-      tr.innerHTML = `<td class="mono">${esc(r.run_id)}</td>
+      tr.innerHTML = `<td style="font-family:ui-monospace,monospace;font-size:12px;">${esc(r.run_id)}</td>
                       <td style="opacity:.6;">${(r.size / 1024).toFixed(1)} KB</td>`;
       tr.addEventListener("click", () => loadReportDetail(r.run_id));
       body.appendChild(tr);
@@ -516,21 +482,22 @@ async function loadReportDetail(runId) {
   try {
     const rep = await api(`/reports/${runId}`);
     const errRows = Object.entries(rep.errors_by_type || {});
+    const td = 'style="opacity:.6;width:150px;"';
     box.innerHTML = `
       <table class="table">
         <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
         <tbody>
-        <tr><td style="opacity:.6;width:150px;">Задача</td><td>${esc(rep.task)}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Итог</td><td><span class="tag ${rep.success ? "tag-accent-2" : "tag-accent"}">${rep.success ? "успех" : "провал"}</span></td></tr>
-        <tr><td style="opacity:.6;width:150px;">Шагов</td><td>${rep.steps ?? "—"}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Длительность</td><td>${rep.duration ?? "—"} c</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Токенов</td><td>${rep.tokens ?? "—"}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Loop-триггеров</td><td>${rep.loop_triggers ?? 0}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Событий капчи</td><td>${rep.captcha_events ?? 0}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Ошибки по типам</td><td>${
+        <tr><td ${td}>Задача</td><td>${esc(rep.task)}</td></tr>
+        <tr><td ${td}>Итог</td><td><span class="tag ${rep.success ? "tag-accent-2" : "tag-accent"}">${rep.success ? "успех" : "провал"}</span></td></tr>
+        <tr><td ${td}>Шагов</td><td>${rep.steps ?? "—"}</td></tr>
+        <tr><td ${td}>Длительность</td><td>${rep.duration ?? "—"} c</td></tr>
+        <tr><td ${td}>Токенов</td><td>${rep.tokens ?? "—"}</td></tr>
+        <tr><td ${td}>Loop-триггеров</td><td>${rep.loop_triggers ?? 0}</td></tr>
+        <tr><td ${td}>Событий капчи</td><td>${rep.captcha_events ?? 0}</td></tr>
+        <tr><td ${td}>Ошибки по типам</td><td>${
           errRows.length ? errRows.map(([k, v]) => `<span class="tag tag-accent">${esc(k)} × ${v}</span>`).join(" ") : "—"}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Финальная ошибка</td><td>${esc(rep.error || "—")}</td></tr>
-        <tr><td style="opacity:.6;width:150px;">Финальный URL</td><td class="mono">${esc(rep.final_url || "—")}</td></tr>
+        <tr><td ${td}>Финальная ошибка</td><td>${esc(rep.error || "—")}</td></tr>
+        <tr><td ${td}>Финальный URL</td><td style="font-family:ui-monospace,monospace;font-size:12px;">${esc(rep.final_url || "—")}</td></tr>
         </tbody>
       </table>
       <p class="muted" style="margin-bottom:0;">Сырой JSON: <code>/reports/${esc(runId)}</code></p>`;
@@ -544,8 +511,8 @@ async function loadConfig() {
     const data = await api("/config");
     const entries = Object.entries(data.settings || {});
     body.innerHTML = entries.map(([k, v]) =>
-      `<tr><td class="mono">${esc(k)}</td>
-       <td class="mono" style="opacity:.75;">${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("");
+      `<tr><td style="font-family:ui-monospace,monospace;font-size:12px;">${esc(k)}</td>
+       <td style="font-family:ui-monospace,monospace;font-size:12px;opacity:.75;">${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("");
   } catch (e) { body.innerHTML = `<tr><td colspan="2" class="muted">Ошибка: ${esc(e.message)}</td></tr>`; }
 }
 $("config-refresh").addEventListener("click", loadConfig);
