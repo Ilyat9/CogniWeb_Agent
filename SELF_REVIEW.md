@@ -125,6 +125,67 @@ temperature = 0.1  # Детерминированность → меньше о�
 
 Альтернативы: **docker-compose как основной путь деплоя** — отклонён в пользу «голого» systemd: на одиночном VPS compose добавляет слой отладки без выигрыша, а Dockerfile/MODE=api задокументированы ранее и упомянуты как вариант (с важной поправкой про `-p 127.0.0.1:...`). **Инструкция под конкретного облачного провайдера** — отклонена по требованию и по существу: различия между AWS/GCP/Hetzner не влияют ни на один шаг этого документа. Осознанное ограничение документа: это справочник по умолчанию-безопасной конфигурации, а не по безопасности как таковой — аутентификация tenant_id, ротация токенов, WAF остаются вне скоупа и помечены как таковые.
 
+## Структурный рефакторинг: расположение файлов (без изменения логики)
+
+Чисто структурная задача: перемещение файлов и правка путей, ноль изменений бизнес-логики. Все перемещения выполнены через `git mv` (история/blame сохранены).
+
+### Таблица «было → стало»
+
+| Было | Стало |
+|---|---|
+| `requirements.txt` | `requirements/base.txt` |
+| `requirements.in` | `requirements/base.in` |
+| `requirements-api.txt` | `requirements/api.txt` |
+| `requirements-dev.txt` | `requirements/dev.txt` |
+| `requirements-tools.txt` | `requirements/tools.txt` |
+| `requirements-ui.txt` | `requirements/ui.txt` |
+| `requirements.lock.txt` | `requirements/lock.txt` |
+| `ARCHITECTURE.md` | `docs/ARCHITECTURE.md` |
+| `QUICK_START.md` | `docs/QUICK_START.md` |
+| блоки `src/api/app.py` (Pydantic-схемы) | `src/api/models.py` (новый файл) |
+| блоки `src/api/app.py` (маскирование секретов) | `src/api/security.py` (новый файл) |
+
+Переименование внутри `requirements/` (снятие префикса) безопасно: pip-compile/pip не завязаны на конкретное имя файла, все команды задают пути явно (`pip-compile --generate-hashes requirements/base.in -o requirements/base.txt`). Включения `-r` между файлами обновлены (`api.txt` → `-r base.txt`, `ui.txt` → `-r api.txt`).
+
+### Исправленные ссылки (все места, где упоминались перемещённые файлы)
+
+- **Makefile** (5 мест): `install` → `requirements/base.txt`; `install-tools` → `requirements/tools.txt`; `install-ui` → `requirements/ui.txt`; гвард `check-no-captcha-solvers` → glob `requirements/*.txt`; `update-deps` → `pip-compile --upgrade requirements/base.in -o requirements/base.txt`.
+- **Dockerfile**: `COPY requirements/ /app/requirements/` одним слоем ДО копирования кода + три пути в `pip install -c .../lock.txt -r .../ui|base|tools.txt`. Выбран вариант с сохранением плоской семантики кэша: один COPY только файлов зависимостей перед `COPY . /app/` — кэш слоя инвалидируется при изменении зависимостей, но НЕ при каждом изменении `src/`, ровно как раньше. Проверено `docker build --check` («no warnings»); полная сборка образа в среде агента не выполнялась (тяжёлый pull базового Playwright-образа).
+- **`.github/workflows/ci.yml`** (12 мест): 2 × `hashFiles(...)`, установки зависимостей в job'ах lint/test/security/e2e (4 блока), блок `pip-audit` со всеми пятью файлами, `lock-verify` → `requirements/lock.txt`, 2 комментария.
+- **`.github/workflows/real-browser.yml`** (2 места): cache-key `hashFiles(...)` и установка зависимостей.
+- **`.github/workflows/release.yml`** (5 мест): `pip-compile --generate-hashes requirements/base.in -o requirements/base.txt`, grep-проверка хэшей (логика supply-chain-проверки НЕ менялась — только путь), upload-artifact, список файлов релиза, комментарий.
+- **Документация**: `README.md` (дерево структуры, ссылки → `docs/...`, упоминания requirements-путей), `docs/QUICK_START.md`, `docs/ARCHITECTURE.md` (внутренние сниппеты CI/Docker), `docs/MONITORING.md`, `docs/DEPLOYMENT.md`, `CLAUDE.md`.
+
+### Что НЕ перенесено и почему
+
+- **`README.md`, `LICENSE.md`** — остались в корне: стандартная GitHub-конвенция видимости.
+- **`SELF_REVIEW.md`** — остался в корне: на него ссылаются комментарии в коде (`settings.py`, `orchestrator.py`, `llm.py`) и тесты; перенос сломал бы смысл этих ссылок ради косметики.
+- **`main.py`, `docker-healthcheck.py`** — точки входа Dockerfile CMD/HEALTHCHECK (`python main.py`, `python docker-healthcheck.py`); перенос требует правки образа без выигрыша.
+- **`pyproject.toml`, `.bandit`, `.dockerignore`, `.env.example`** — конфигурационные конвенции инструментов, ожидаются в корне.
+- **`CLAUDE.md` не переносился в `docs/`**: инструменты класса Claude Code ищут его именно в корне проекта; кроме того, он убран из публичного репозитория (ниже).
+- **Дальнейшее дробление `src/api/app.py` остановлено**: dispatcher/pruner/pub-sub — вложенные замыкания `create_app()`, замкнутые на локальные переменные и `app.state`; их вынос был бы реструктуризацией с реальным риском, а не перемещением кода.
+
+### `CLAUDE.md`: убран из публичного репозитория, оставлен локально
+
+- Файл физически на диске (`ls CLAUDE.md` — присутствует), локальная работа агента не нарушена.
+- Добавлен в `.gitignore` отдельной секцией с комментарием (`.gitignore` сам по себе недостаточен для уже закоммиченного файла — он действует только на неотслеживаемые файлы).
+- Убран из индекса через `git rm --cached CLAUDE.md`; проверено: `git ls-files | grep -i claude` — пусто, `git status` чист, файл на месте.
+- **Отдельный коммит** (`chore: remove CLAUDE.md from public repo, keep local-only via .gitignore`), не смешанный с перемещениями — легко отревертить изолированно.
+- Свежий `git clone` проверен в изолированной директории: `CLAUDE.md` в клоне отсутствует.
+- Упоминания: ссылка «Руководство для Claude Code» удалена из README (вместе со строкой дерева структуры), упоминание в SELF_REVIEW.md переформулировано как описание внутреннего локального файла. Мёртвых ссылок не осталось.
+- **История прошлых коммитов НЕ затронута**: старые версии `CLAUDE.md` остаются видимыми в истории до отдельной осознанной операции зачистки (`git filter-repo`/BFG + force-push) — она НЕ выполнялась автоматически, т.к. переписывает хэши всех коммитов и ломает существующие клоны; требует явного подтверждения.
+- CI от отсутствия файла не страдает: ни один workflow не читает `CLAUDE.md` (проверено grep по `.github/workflows/`).
+
+### Верификация после рефакторинга
+
+- ✅ Полный тестовый набор: **319 passed, 1 skipped** (существовавший skip), 4 deselected. Real-browser/e2e тесты с реальным Chromium в среде агента не прогонялись (требуют браузерного окружения); они и раньше исключены из дефолтного прогона маркером `real_browser` и выполняются отдельной командой `make test-real-browser` / CI-job'ом.
+- ✅ Импорты совместимы: `from src.api.app import create_app, mask_settings, TaskSubmission, TaskStatus, MAX_PENDING_TASKS, _init_sentry` работает (перемещённые имена реэкспортируются).
+- ✅ Установка зависимостей по новым путям: `pip install --dry-run -r requirements/base.txt` резолвится.
+- ✅ Make-цели парсятся и указывают на новые пути (`make -n ...`), гвард капча-солверов проходит по `requirements/*.txt`.
+- ✅ Синтаксис Dockerfile: `docker build --check` — «no warnings found» (полная сборка не выполнялась — тяжёлый базовый образ).
+- ✅ `git status`/`git diff`: только перемещения (`git mv`) и точечные правки путей; логика не тронута.
+- ⚠️ Вне скоупа: pre-existing замечания ruff в файлах, не затронутых рефакторингом (например, `browser.py` F821) — существовали до задачи и сознательно не исправлялись.
+
 ## Итоговый месседж
 
 Этот проект — демонстрация того, как я работаю в реальных условиях:
