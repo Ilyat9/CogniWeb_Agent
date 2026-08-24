@@ -2,7 +2,7 @@
 # CogniWeb Agent - Makefile
 # ==============================================================================
 
-.PHONY: help install install-dev install-tools install-ui test test-verbose test-coverage lint format clean docker-build docker-run docker-clean run dev run-ui check-no-captcha-solvers
+.PHONY: help install install-dev install-tools install-ui test test-verbose test-coverage test-real-browser lint format clean docker-build docker-run docker-clean run dev run-ui check-no-captcha-solvers
 
 # Переменные
 PYTHON := python3
@@ -101,6 +101,11 @@ test-coverage: ## Запустить тесты с coverage отчетом
 		--asyncio-mode=auto
 	@echo "$(GREEN)✓ Coverage report generated in htmlcov/index.html$(RESET)"
 
+test-real-browser: ## Запустить smoke-тесты с РЕАЛЬНЫМ Chromium (не входит в обычный pytest)
+	@echo "$(CYAN)Running real-browser smoke tests (real Chromium, local pages)...$(RESET)"
+	$(PYTEST) tests/test_real_browser_smoke.py -m real_browser -v --tb=short --asyncio-mode=auto
+	@echo "$(GREEN)✓ Real-browser smoke tests complete!$(RESET)"
+
 test-watch: ## Запустить тесты в watch режиме (требует pytest-watch)
 	@echo "$(CYAN)Starting test watcher...$(RESET)"
 	$(PIP) install pytest-watch
@@ -141,11 +146,13 @@ docker-build: ## Собрать Docker образ
 
 docker-run: ## Запустить в Docker контейнере
 	@echo "$(CYAN)Running agent in Docker...$(RESET)"
+	@mkdir -p data
 	docker run --rm \
 		-v $(PWD)/.env:/app/.env:ro \
 		-v $(PWD)/browser_data:/app/browser_data \
 		-v $(PWD)/screenshots:/app/screenshots \
 		-v $(PWD)/logs:/app/logs \
+		-v $(PWD)/data:/app/data \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)
 
 docker-shell: ## Запустить bash в контейнере (для отладки)
@@ -183,7 +190,7 @@ clean: ## Удалить кэш, логи и временные файлы
 	find . -type f -name "*.pyo" -delete
 	find . -type f -name "*.log" -delete
 	rm -rf htmlcov/ .coverage coverage.xml
-	rm -rf browser_data/* screenshots/* logs/*
+	rm -rf browser_data/* screenshots/* logs/* data/*.db
 	@echo "$(GREEN)✓ Cleanup complete!$(RESET)"
 
 clean-all: clean docker-clean ## Полная очистка (включая Docker)

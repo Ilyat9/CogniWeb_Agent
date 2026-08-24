@@ -31,16 +31,23 @@ asyncio_mode = "auto"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# Task 3 (real-browser smoke): real_browser tests launch a REAL Chromium
+# and are excluded from the DEFAULT run via addopts below - they have
+# different time budgets and are only meaningful where a browser binary is
+# installed. Run them explicitly: pytest -m real_browser (a CLI -m flag
+# overrides the addopts filter, argparse last-wins).
 addopts = """
     -ra
     --strict-markers
     --strict-config
     --showlocals
+    -m "not real_browser"
 """
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "e2e: marks tests as end-to-end tests",
+    "real_browser: launches REAL Chromium against local pages; excluded from the default run, execute explicitly with '-m real_browser' (or 'make test-real-browser')",
 ]
 
 [tool.ruff]
