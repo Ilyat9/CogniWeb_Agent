@@ -272,9 +272,7 @@ class LLMService:
             cfg.llm_fallback_model,
         )
 
-    async def _chat_completion(
-        self, messages: list[dict[str, Any]], temperature: float
-    ) -> Any:
+    async def _chat_completion(self, messages: list[dict[str, Any]], temperature: float) -> Any:
         """Single chat.completions.create against the ACTIVE provider
         (primary, or fallback after failover) with the shared error
         mapping. Both generate_action() and generate_text() route through

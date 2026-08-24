@@ -153,9 +153,7 @@ async def _extract_and_register(browser: BrowserService, settings) -> dict:
     """Mirror the orchestrator's observation step: extract interactive
     elements from the LIVE DOM and register their selectors into
     browser.element_map (the single source of truth for element_id)."""
-    elements, extraction_error = await DOMProcessor(settings).get_interactive_elements(
-        browser.page
-    )
+    elements, extraction_error = await DOMProcessor(settings).get_interactive_elements(browser.page)
     assert extraction_error is None, f"live DOM extraction failed: {extraction_error}"
     browser.element_map.update({elem["id"]: elem["selector"] for elem in elements})
     return {elem["tag"]: elem["id"] for elem in elements}
@@ -164,7 +162,9 @@ async def _extract_and_register(browser: BrowserService, settings) -> dict:
 def _skip_if_no_chromium(e: BrowserError):
     message = str(e)
     if "Executable doesn't exist" in message or "playwright install" in message.lower():
-        pytest.skip("Playwright Chromium not installed - run: python -m playwright install chromium")
+        pytest.skip(
+            "Playwright Chromium not installed - run: python -m playwright install chromium"
+        )
     raise
 
 
@@ -231,9 +231,7 @@ async def test_smoke_fill_and_submit_form(settings, site_url):
             # by this very test: picking "the input" via a tag->id map grabs
             # the LAST one - here that was originally an type=email field,
             # whose native constraint validation silently blocked submit.)
-            elements, err = await DOMProcessor(settings).get_interactive_elements(
-                browser.page
-            )
+            elements, err = await DOMProcessor(settings).get_interactive_elements(browser.page)
             assert err is None
             input_elems = [e for e in elements if e["tag"] == "input"]
             assert len(input_elems) == 2, f"expected 2 inputs on live page: {elements}"

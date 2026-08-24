@@ -111,10 +111,7 @@ class TaskPolicy:
 
         # 3. Control characters (excluding \t \n \r): clipboard dumps and
         #    binary paste junk. Not a security control - input hygiene.
-        if any(
-            unicodedata.category(ch) == "Cc" and ch not in "\t\n\r"
-            for ch in task_text
-        ):
+        if any(unicodedata.category(ch) == "Cc" and ch not in "\t\n\r" for ch in task_text):
             return "control_characters"
 
         # 4. Must contain at least one alphanumeric character anywhere -
@@ -136,9 +133,7 @@ class TaskPolicy:
                 except re.error:
                     # A broken operator-supplied regex must not take down
                     # the intake path; skip it loudly instead.
-                    logger.warning(
-                        f"TASK_FORBIDDEN_PATTERNS: invalid regex skipped: {pattern!r}"
-                    )
+                    logger.warning(f"TASK_FORBIDDEN_PATTERNS: invalid regex skipped: {pattern!r}")
         return None
 
     def _audit(self, task_text: str, reason: str, tenant_id: str) -> None:
@@ -159,4 +154,3 @@ class TaskPolicy:
         # One line in the regular log too (without payload), so filtering
         # activity is visible in agent.log without reading the audit file.
         logger.warning(f"Task rejected by intake policy: rule={reason} tenant_id={tenant_id}")
-

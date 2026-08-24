@@ -19,7 +19,6 @@ from src.api.app import create_app  # noqa: E402
 from src.config.settings import Settings  # noqa: E402
 from src.core.models import TaskResult  # noqa: E402
 from src.infrastructure.task_policy import (  # noqa: E402
-    AUDIT_LOGGER_NAME,
     TaskPolicy,
     _parse_patterns,
 )
@@ -275,5 +274,3 @@ class TestApiIntake:
 
 async def _ok_runner(task, starting_url):
     return TaskResult(success=True, summary="ok", steps_taken=0, total_duration_seconds=0.0)
-
-

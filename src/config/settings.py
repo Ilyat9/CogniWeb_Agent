@@ -404,9 +404,7 @@ class Settings(BaseSettings):
             )
         parsed = urlparse(str(self.llm_fallback_base_url))
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ValueError(
-                f"Invalid LLM_FALLBACK_BASE_URL format: {self.llm_fallback_base_url}"
-            )
+            raise ValueError(f"Invalid LLM_FALLBACK_BASE_URL format: {self.llm_fallback_base_url}")
         if self.llm_fallback_provider_mode == "cloud":
             base = str(self.llm_fallback_base_url)
             if (
@@ -974,8 +972,7 @@ class Settings(BaseSettings):
         default=200,
         ge=1,
         alias="MAX_FINISHED_TASKS",
-        description="Keep at most this many newest finished tasks after "
-        "each pruning sweep.",
+        description="Keep at most this many newest finished tasks after " "each pruning sweep.",
     )
 
     task_prune_interval_seconds: float = Field(
@@ -1055,8 +1052,7 @@ class Settings(BaseSettings):
         default=60.0,
         ge=10.0,
         alias="TENANT_CONTEXT_SWEEP_INTERVAL_SECONDS",
-        description="How often the background sweeper checks for idle "
-        "tenant contexts to close.",
+        description="How often the background sweeper checks for idle " "tenant contexts to close.",
     )
 
     # ===== Rate limiting / usage accounting (API service mode) =====
@@ -1104,8 +1100,6 @@ class Settings(BaseSettings):
         "Empty (default) = integration completely inactive. Requires the "
         "sentry-sdk package; without it a set DSN is logged and skipped.",
     )
-
-
 
     # ===== Debugging =====
     debug_mode: bool = Field(

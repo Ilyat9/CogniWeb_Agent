@@ -59,10 +59,7 @@ class UsageTracker:
         ):
             return False, "quota_exceeded", 0
 
-        if (
-            self.max_concurrent_per_tenant > 0
-            and running_tasks >= self.max_concurrent_per_tenant
-        ):
+        if self.max_concurrent_per_tenant > 0 and running_tasks >= self.max_concurrent_per_tenant:
             # Unknown retry time - depends on the running task's duration.
             return False, "concurrent_limit", 30
 

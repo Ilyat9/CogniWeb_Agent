@@ -36,7 +36,6 @@ import openai  # noqa: E402
 import tenacity  # noqa: E402
 from tenacity import wait_fixed  # noqa: E402
 
-import src.api.app as api_app  # noqa: E402
 from src.agent.orchestrator import AgentOrchestrator  # noqa: E402
 from src.api.app import (  # noqa: E402
     _detect_public_bind,
@@ -313,6 +312,11 @@ class TestTaskStorePruning:
                 if client.get(f"/task/{task_id}").json()["state"] == "finished":
                     break
                 time.sleep(0.05)
+            # Deterministic TTL age: task_ttl_hours=0.000001 is only 3.6ms,
+            # and on a fast CI machine the finished-wait loop above can exit
+            # sooner than that - without this pause the prune at the next
+            # submit races the TTL and the ancient task survives (flaky).
+            time.sleep(0.05)
             client.post("/task", json={"task": "t2"})
             listed = [t["task_id"] for t in client.get("/tasks").json()["tasks"]]
             assert task_id not in listed

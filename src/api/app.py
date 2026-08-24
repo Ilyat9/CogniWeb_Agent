@@ -170,6 +170,7 @@ def _init_sentry(settings: Any | None) -> None:
     except Exception as e:  # noqa: BLE001 - monitoring must never block startup
         logger.warning(f"Sentry initialization failed (continuing without it): {e}")
 
+
 # Default sweep interval for idle tenant browser contexts (seconds) when no
 # settings object is available (settings-less test wiring).
 CONTEXT_SWEEP_INTERVAL_SECONDS = 60
@@ -224,9 +225,7 @@ def create_app(
     # production wiring (build_default_app). Without wiring, components
     # report "unknown" and overall status stays "ok" - an injected-runner
     # test app cannot prove or disprove provider health.
-    app.state.health_providers: dict[str, Callable[[], Awaitable[bool]]] = (
-        health_providers or {}
-    )
+    app.state.health_providers: dict[str, Callable[[], Awaitable[bool]]] = health_providers or {}
     app.state._health_cache: tuple[float, dict] | None = None
     _init_sentry(settings)
     app.state.draining = False
@@ -242,9 +241,7 @@ def create_app(
 
     task_ttl_hours = float(_setting("task_ttl_hours", TASK_TTL_HOURS))
     max_finished_tasks = int(_setting("max_finished_tasks", MAX_FINISHED_TASKS))
-    prune_interval_seconds = float(
-        _setting("task_prune_interval_seconds", PRUNE_INTERVAL_SECONDS)
-    )
+    prune_interval_seconds = float(_setting("task_prune_interval_seconds", PRUNE_INTERVAL_SECONDS))
     # Multi-tenancy: how many tasks may run in parallel (= open contexts).
     # Default 1 reproduces the legacy strictly-sequential worker exactly.
     sweep_interval_seconds = float(
@@ -455,9 +452,7 @@ def create_app(
         _metrics.observe_task_running(record.get("tenant_id", DEFAULT_TENANT_ID))
         runner: TaskRunner = app.state.task_runner
         try:
-            result = await runner(
-                record["task"], record["starting_url"], **_runner_kwargs(record)
-            )
+            result = await runner(record["task"], record["starting_url"], **_runner_kwargs(record))
             record["result"] = result.model_dump()
         except Exception as e:
             logger.exception("Task %s crashed", task_id)
@@ -666,11 +661,7 @@ def create_app(
             # Browser engine: contexts may legitimately be all closed
             # (idle TTL) - that's healthy, not down.
             stats = pool.stats
-            components["browser"] = (
-                "ok"
-                if stats["busy"] == 0 or stats["open"] > 0
-                else "degraded"
-            )
+            components["browser"] = "ok" if stats["busy"] == 0 or stats["open"] > 0 else "degraded"
 
         for name in providers:
             components.setdefault(name, "unknown")
@@ -739,14 +730,17 @@ def create_app(
         running_for_tenant = sum(
             1
             for r in app.state.tasks.values()
-            if r["state"] == "running"
-            and r.get("tenant_id", DEFAULT_TENANT_ID) == tenant
+            if r["state"] == "running" and r.get("tenant_id", DEFAULT_TENANT_ID) == tenant
         )
         allowed, reason, retry_after = usage.check_submission(tenant, running_for_tenant)
         if not allowed:
             raise HTTPException(
                 status_code=429,
-                detail={"error": "rate_limited", "reason": reason, "retry_after_seconds": retry_after},
+                detail={
+                    "error": "rate_limited",
+                    "reason": reason,
+                    "retry_after_seconds": retry_after,
+                },
                 headers={"Retry-After": str(max(1, int(retry_after)))},
             )
 
@@ -803,10 +797,7 @@ def create_app(
     async def get_task(task_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> TaskStatus:
         record = _resolve_tenant_record(task_id, tenant_id)
         return TaskStatus(
-            **{
-                k: record[k]
-                for k in ("task_id", "state", "submitted_at", "result")
-            },
+            **{k: record[k] for k in ("task_id", "state", "submitted_at", "result")},
             current_step=record.get("current_step"),
             last_tool=record.get("last_tool"),
             tenant_id=record.get("tenant_id", DEFAULT_TENANT_ID),
@@ -841,9 +832,7 @@ def create_app(
         return {"tasks": items}
 
     @app.get("/task/{task_id}/steps", dependencies=protected)
-    async def get_task_steps(
-        task_id: str, tenant_id: str = DEFAULT_TENANT_ID
-    ) -> dict:
+    async def get_task_steps(task_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
         """Task 1 (web UI): full step-event history for a task (the polling
         fallback for clients that cannot hold a WebSocket)."""
         record = _resolve_tenant_record(task_id, tenant_id)
@@ -854,9 +843,7 @@ def create_app(
         }
 
     @app.get("/task/{task_id}/screenshot", dependencies=protected)
-    async def get_task_screenshot(
-        task_id: str, tenant_id: str = DEFAULT_TENANT_ID
-    ):
+    async def get_task_screenshot(task_id: str, tenant_id: str = DEFAULT_TENANT_ID):
         """Task 1 (web UI): the most recent screenshot taken during the run
         (from take_screenshot steps). Served as a file response.
 

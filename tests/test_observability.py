@@ -88,14 +88,10 @@ class TestMetricsEndpoint:
     def test_task_lifecycle_counters_increment(self, tmp_path):
         client = _client(tmp_path)
         try:
-            before = _metrics.TASKS_TOTAL.labels(
-                tenant_id="default", state="finished"
-            )._value.get()
+            before = _metrics.TASKS_TOTAL.labels(tenant_id="default", state="finished")._value.get()
             task_id = client.post("/task", json={"task": "count me"}).json()["task_id"]
             assert _wait_finished(client, task_id)
-            after = _metrics.TASKS_TOTAL.labels(
-                tenant_id="default", state="finished"
-            )._value.get()
+            after = _metrics.TASKS_TOTAL.labels(tenant_id="default", state="finished")._value.get()
             assert after == before + 1
         finally:
             client.close()
@@ -105,9 +101,7 @@ class TestMetricsEndpoint:
         try:
             task_id = client.post("/task", json={"task": "fail"}).json()["task_id"]
             assert _wait_finished(client, task_id)
-            failed = _metrics.TASKS_TOTAL.labels(
-                tenant_id="default", state="failed"
-            )._value.get()
+            failed = _metrics.TASKS_TOTAL.labels(tenant_id="default", state="failed")._value.get()
             assert failed >= 1
         finally:
             client.close()
@@ -115,13 +109,11 @@ class TestMetricsEndpoint:
     def test_tenant_label_isolation(self, tmp_path):
         client = _client(tmp_path)
         try:
-            task_id = client.post(
-                "/task", json={"task": "t", "tenant_id": "acme"}
-            ).json()["task_id"]
+            task_id = client.post("/task", json={"task": "t", "tenant_id": "acme"}).json()[
+                "task_id"
+            ]
             assert _wait_finished(client, task_id, tenant_id="acme")
-            acme_queued = _metrics.TASKS_TOTAL.labels(
-                tenant_id="acme", state="queued"
-            )._value.get()
+            acme_queued = _metrics.TASKS_TOTAL.labels(tenant_id="acme", state="queued")._value.get()
             assert acme_queued >= 1
         finally:
             client.close()
@@ -200,9 +192,8 @@ class TestHealthEndpoint:
 
 class TestSentryOptIn:
     def test_no_dsn_no_activation(self):
-        from src.api.app import _init_sentry
-
         import src.api.app as ap
+        from src.api.app import _init_sentry
 
         ap._sentry_initialized = False
         _init_sentry(None)  # no settings at all - must be a no-op
@@ -211,9 +202,8 @@ class TestSentryOptIn:
     def test_dsn_without_package_skips_cleanly(self, tmp_path, monkeypatch):
         import builtins
 
-        from src.api.app import _init_sentry
-
         import src.api.app as ap
+        from src.api.app import _init_sentry
 
         real_import = builtins.__import__
 

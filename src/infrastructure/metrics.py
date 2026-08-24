@@ -114,7 +114,5 @@ def render() -> str | None:
 
 
 CONTENT_TYPE_LATEST = (
-    "text/plain; version=0.0.4; charset=utf-8"
-    if AVAILABLE
-    else "text/plain; charset=utf-8"
+    "text/plain; version=0.0.4; charset=utf-8" if AVAILABLE else "text/plain; charset=utf-8"
 )

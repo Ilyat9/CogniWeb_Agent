@@ -27,9 +27,10 @@ import logging
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from playwright.async_api import (
@@ -1879,9 +1880,7 @@ class TenantContextPool:
         self._busy: set[str] = set()
         self._last_used: dict[str, float] = {}
         self.max_open = int(getattr(settings, "max_concurrent_tenant_contexts", 1))
-        self.idle_ttl_seconds = float(
-            getattr(settings, "tenant_context_idle_ttl_seconds", 600.0)
-        )
+        self.idle_ttl_seconds = float(getattr(settings, "tenant_context_idle_ttl_seconds", 600.0))
         self.sweep_interval_seconds = float(
             getattr(settings, "tenant_context_sweep_interval_seconds", 60.0)
         )
@@ -1923,22 +1922,16 @@ class TenantContextPool:
                     existing is not None or len(self._contexts) < self.max_open
                 ):
                     self._busy.add(tenant_id)
-                    launching = existing is None
                     break
                 # Full (or tenant busy): look for an idle victim to evict -
                 # NEVER a busy one; a running task's browser is untouchable.
                 if tenant_id not in self._busy:
-                    idle = [
-                        t
-                        for t in self._contexts
-                        if t not in self._busy and t != tenant_id
-                    ]
+                    idle = [t for t in self._contexts if t not in self._busy and t != tenant_id]
                     if idle:
                         victim = min(idle, key=lambda t: self._last_used.get(t, 0.0))
                         evict_service = self._contexts.pop(victim)
                         self._last_used.pop(victim, None)
                         self._busy.add(tenant_id)
-                        launching = True
                         break
                 # Polling (not Condition.wait) keeps this method simple and
                 # safe against missed notifications from the sync release();
@@ -2027,4 +2020,3 @@ class TenantContextPool:
         self._busy.clear()
         self._last_used.clear()
         _metrics.set_browser_contexts(len(self._contexts))
-

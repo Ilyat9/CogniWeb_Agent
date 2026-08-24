@@ -140,9 +140,7 @@ class TestFailover:
         monkeypatch.setattr(service, "_check_provider_health", healthy)
         fake_client = MagicMock()
         fake_client.chat.completions.create = AsyncMock(return_value=_resp("from fallback"))
-        monkeypatch.setattr(
-            "src.infrastructure.llm.AsyncOpenAI", lambda **kwargs: fake_client
-        )
+        monkeypatch.setattr("src.infrastructure.llm.AsyncOpenAI", lambda **kwargs: fake_client)
 
         assert await service.generate_text(messages=[]) == "from fallback"
         assert service._fallback_active is True
@@ -165,9 +163,7 @@ class TestFailover:
         monkeypatch.setattr(service, "_check_provider_health", healthy)
         fake_client = MagicMock()
         fake_client.chat.completions.create = AsyncMock(return_value=_resp("fb"))
-        monkeypatch.setattr(
-            "src.infrastructure.llm.AsyncOpenAI", lambda **kwargs: fake_client
-        )
+        monkeypatch.setattr("src.infrastructure.llm.AsyncOpenAI", lambda **kwargs: fake_client)
 
         assert await service.generate_text(messages=[]) == "fb"
         assert await service.generate_text(messages=[]) == "fb"

@@ -7,7 +7,6 @@ TenantContextPool lifecycle, and round-robin fairness of the dispatcher.
 import asyncio
 import sys
 import time
-from collections import deque
 from pathlib import Path
 
 import pytest
@@ -112,19 +111,14 @@ class TestIsolation:
         )
         client.__enter__()
         try:
-            task_id = client.post(
-                "/task", json={"task": "secret", "tenant_id": "acme"}
-            ).json()["task_id"]
+            task_id = client.post("/task", json={"task": "secret", "tenant_id": "acme"}).json()[
+                "task_id"
+            ]
             wait_for_state(client, task_id, "finished", tenant_id="acme")
             # default tenant cannot see acme's task - and vice versa
             assert client.get(f"/task/{task_id}").status_code == 404
-            assert (
-                client.get(f"/task/{task_id}", params={"tenant_id": "acme"}).status_code
-                == 200
-            )
-            assert (
-                client.get(f"/task/{task_id}/steps").status_code == 404
-            )  # default bucket again
+            assert client.get(f"/task/{task_id}", params={"tenant_id": "acme"}).status_code == 200
+            assert client.get(f"/task/{task_id}/steps").status_code == 404  # default bucket again
             # stop from the wrong bucket must NOT reach the task either
             assert client.post(f"/task/{task_id}/stop").status_code == 404
         finally:
@@ -137,9 +131,7 @@ class TestIsolation:
         client.__enter__()
         try:
             id_a = client.post("/task", json={"task": "a"}).json()["task_id"]
-            id_b = client.post(
-                "/task", json={"task": "b", "tenant_id": "beta"}
-            ).json()["task_id"]
+            id_b = client.post("/task", json={"task": "b", "tenant_id": "beta"}).json()["task_id"]
             wait_for_state(client, id_a, "finished")
             wait_for_state(client, id_b, "finished", tenant_id="beta")
 
@@ -153,11 +145,13 @@ class TestIsolation:
             assert id_b in beta and id_a not in beta
 
             everything = [
-                t["task_id"] for t in client.get("/tasks", params={"tenant_id": "all"}).json()["tasks"]
+                t["task_id"]
+                for t in client.get("/tasks", params={"tenant_id": "all"}).json()["tasks"]
             ]
             assert {id_a, id_b} <= set(everything)
             listed = {
-                t["task_id"]: t for t in client.get("/tasks", params={"tenant_id": "all"}).json()["tasks"]
+                t["task_id"]: t
+                for t in client.get("/tasks", params={"tenant_id": "all"}).json()["tasks"]
             }
             assert listed[id_b]["tenant_id"] == "beta"
         finally:
@@ -221,9 +215,7 @@ class TestTenantContextPool:
         pool, created = make_pool(tmp_path)
         svc = await pool.acquire("acme")
         assert svc.started and len(created) == 1
-        assert svc.settings.user_data_dir == str(
-            tmp_path / "browser_data" / "tenants" / "acme"
-        )
+        assert svc.settings.user_data_dir == str(tmp_path / "browser_data" / "tenants" / "acme")
         pool.release("acme")
         again = await pool.acquire("acme")
         # warm reuse: same service, no second launch
@@ -267,7 +259,7 @@ class TestTenantContextPool:
         await asyncio.sleep(0.15)
         assert not b_task.done() and not a.closed  # waits, no eviction
         pool.release("a")
-        b = await asyncio.wait_for(b_task, timeout=2)
+        await asyncio.wait_for(b_task, timeout=2)
         assert a.closed and len(created) == 2  # evicted only after release
         await pool.close_all()
 
@@ -343,4 +335,3 @@ class TestDispatcherFairness:
             assert resp.status_code == 429
         finally:
             client.close()
-
