@@ -138,7 +138,9 @@ class TestApiAuth:
         try:
             resp = client.get("/health")
             assert resp.status_code == 200
-            assert resp.json() == {"status": "ok"}
+            # /health now carries structured component statuses; the point
+            # of THIS test is that it stays reachable WITHOUT a token.
+            assert resp.json()["status"] == "ok"
         finally:
             client.__exit__(None, None, None)
 

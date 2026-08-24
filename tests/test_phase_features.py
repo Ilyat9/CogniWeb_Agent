@@ -624,7 +624,12 @@ class TestApiService:
         client, _ = client_and_app
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        body = resp.json()
+        # Structured component status (observability): without production
+        # wiring the probes are "unknown" but the API itself is alive.
+        assert body["status"] == "ok"
+        assert isinstance(body["components"], dict)
+        assert body["components"]["api"] == "ok"
 
     def test_task_submit_and_poll(self, client_and_app):
         client, app = client_and_app
