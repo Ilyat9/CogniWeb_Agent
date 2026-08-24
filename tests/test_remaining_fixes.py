@@ -59,7 +59,7 @@ class TestReasoningBlockStripping:
         JSON action, then the final answer follows after </think>."""
         llm = self._llm(tmp_path)
         response = (
-            '<think>Хорошо, мне нужно кликнуть на элемент. Формат такой: '
+            "<think>Хорошо, мне нужно кликнуть на элемент. Формат такой: "
             '{"tool": "click_element"}. Но подожду, элемент 5 или 7?</think>\n'
             '{"tool": "click_element", "args": {"element_id": 7}}'
         )
@@ -71,9 +71,9 @@ class TestReasoningBlockStripping:
     def test_multiple_think_blocks(self, tmp_path):
         llm = self._llm(tmp_path)
         response = (
-            "<think>first {\"a\": 1}</think>"
-            "<think>second {\"b\": 2}</think>"
-            "{\"tool\": \"wait\", \"args\": {\"seconds\": 1}}"
+            '<think>first {"a": 1}</think>'
+            '<think>second {"b": 2}</think>'
+            '{"tool": "wait", "args": {"seconds": 1}}'
         )
         parsed = json.loads(llm._extract_json_from_response(response))
         assert parsed["tool"] == "wait"
@@ -99,27 +99,20 @@ class TestReasoningBlockStripping:
     def test_code_block_after_think_wins(self, tmp_path):
         llm = self._llm(tmp_path)
         response = (
-            "<think>Format is like {\"tool\": \"x\"}</think>\n"
-            '```json\n{"tool": "scroll_page"}\n```'
+            '<think>Format is like {"tool": "x"}</think>\n' '```json\n{"tool": "scroll_page"}\n```'
         )
         parsed = json.loads(llm._extract_json_from_response(response))
         assert parsed["tool"] == "scroll_page"
 
     def test_custom_strip_tags_via_settings(self, tmp_path):
         llm = self._llm(tmp_path, reasoning_strip_tags="thought")
-        response = (
-            "<thought>deliberation {\"decoy\": true}</thought>"
-            '{"tool": "wait"}'
-        )
+        response = '<thought>deliberation {"decoy": true}</thought>' '{"tool": "wait"}'
         parsed = json.loads(llm._extract_json_from_response(response))
         assert parsed["tool"] == "wait"
 
     def test_angle_brackets_optional_in_setting(self, tmp_path):
         llm = self._llm(tmp_path, reasoning_strip_tags="<think>, <Reasoning>")
-        response = (
-            "<REASONING>{\"decoy\": 1}</REASONING>"
-            '{"tool": "wait"}'
-        )
+        response = '<REASONING>{"decoy": 1}</REASONING>' '{"tool": "wait"}'
         assert json.loads(llm._extract_json_from_response(response))["tool"] == "wait"
 
     def test_empty_setting_disables_stripping(self, tmp_path):
@@ -175,13 +168,13 @@ ELEMENT_TOOLS = [
 
 class TestUnifiedElementIdCoercion:
     def _orch(self, tmp_path, **overrides):
-        return AgentOrchestrator(
-            make_settings(tmp_path, **overrides), make_browser(), AsyncMock()
-        )
+        return AgentOrchestrator(make_settings(tmp_path, **overrides), make_browser(), AsyncMock())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("tool,args", ELEMENT_TOOLS)
-    async def test_string_element_id_accepted_everywhere(self, tmp_path, tool, args, no_observation):
+    async def test_string_element_id_accepted_everywhere(
+        self, tmp_path, tool, args, no_observation
+    ):
         """The SAME model output ("5") succeeds on EVERY tool - previously
         click coerced while type_text/select_option hard-rejected."""
         orch = self._orch(tmp_path)

@@ -216,6 +216,7 @@ class Settings(BaseSettings):
             )
 
         return v
+
     # ===== Reasoning-Model Hardening =====
     # FIX (local reasoning models break JSON parsing): reasoning/thinking
     # models (DeepSeek R1 distills, Qwen3 with thinking enabled) wrap their
