@@ -330,6 +330,114 @@ class Settings(BaseSettings):
         "LLM_PROVIDER_MODE=local. Set to 0 to disable pacing entirely.",
     )
 
+    # ===== LLM Fallback Provider (health-check + controlled failover) =====
+    # FIX (Task 2 - LLM resilience): LLM_PROVIDER_MODE is a static flag -
+    # if the configured server (local Ollama/vLLM or even a cloud endpoint)
+    # dies mid-run, the agent just accumulated connection errors. These
+    # fields define an OPTIONAL backup provider: on repeated connection-
+    # level failures of the primary, LLMService pings the fallback's
+    # /models endpoint and, if it answers, transparently continues on it.
+    #
+    # Principle kept from the original provider-mode work: EXPLICIT flags,
+    # never auto-detection by URL/port (auto-detection was a past source
+    # of bugs - see SELF_REVIEW.md). Empty LLM_FALLBACK_PROVIDER_MODE
+    # (default) disables the whole mechanism byte-for-byte.
+    llm_fallback_provider_mode: str = Field(
+        default="",
+        alias="LLM_FALLBACK_PROVIDER_MODE",
+        description="Optional fallback provider mode: '' (default, "
+        "failover disabled), 'cloud' or 'local'. When set, LLMService may "
+        "switch to this provider after connection-level failures of the "
+        "primary one (health-checked first).",
+    )
+
+    @field_validator("llm_fallback_provider_mode")
+    @classmethod
+    def validate_llm_fallback_provider_mode(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in ("", "cloud", "local"):
+            raise ValueError(
+                f"LLM_FALLBACK_PROVIDER_MODE must be '', 'cloud' or 'local', got: '{v}'"
+            )
+        return v
+
+    llm_fallback_base_url: str | None = Field(
+        default=None,
+        alias="LLM_FALLBACK_BASE_URL",
+        description="Base URL of the fallback OpenAI-compatible server "
+        "(required when LLM_FALLBACK_PROVIDER_MODE is set).",
+    )
+
+    llm_fallback_api_key: str | None = Field(
+        default=None,
+        alias="LLM_FALLBACK_API_KEY",
+        description="API key for the fallback provider (any non-empty "
+        "placeholder for a local fallback server).",
+    )
+
+    llm_fallback_model: str | None = Field(
+        default=None,
+        alias="LLM_FALLBACK_MODEL",
+        description="Model name served by the fallback provider.",
+    )
+
+    @model_validator(mode="after")
+    def validate_llm_fallback_config(self) -> "Settings":
+        """Fallback fields are all-or-nothing: a half-configured fallback
+        would fail exactly when it is needed most (mid-outage), so refuse
+        it at startup instead."""
+        if not self.llm_fallback_provider_mode:
+            return self
+        missing = [
+            env_name
+            for env_name, value in (
+                ("LLM_FALLBACK_BASE_URL", self.llm_fallback_base_url),
+                ("LLM_FALLBACK_API_KEY", self.llm_fallback_api_key),
+                ("LLM_FALLBACK_MODEL", self.llm_fallback_model),
+            )
+            if value is None or not str(value).strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"LLM_FALLBACK_PROVIDER_MODE='{self.llm_fallback_provider_mode}' "
+                f"requires {', '.join(missing)} to be set as well"
+            )
+        parsed = urlparse(str(self.llm_fallback_base_url))
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError(
+                f"Invalid LLM_FALLBACK_BASE_URL format: {self.llm_fallback_base_url}"
+            )
+        if self.llm_fallback_provider_mode == "cloud":
+            base = str(self.llm_fallback_base_url)
+            if (
+                not base.startswith("https://")
+                and "localhost" not in base
+                and "127.0.0.1" not in base
+            ):
+                raise ValueError(f"LLM_FALLBACK_BASE_URL must use HTTPS for cloud mode: {base}")
+            key = str(self.llm_fallback_api_key)
+            if key.lower() in ("your_api_key_here", "test", "none", "") or len(key) < 10:
+                raise ValueError("LLM_FALLBACK_API_KEY looks like a placeholder (cloud mode)")
+        return self
+
+    llm_health_check_timeout_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=30.0,
+        alias="LLM_HEALTH_CHECK_TIMEOUT_SECONDS",
+        description="Timeout for the lightweight GET /models liveness ping "
+        "used before switching to the fallback provider.",
+    )
+
+    llm_fallback_max_switches: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        alias="LLM_FALLBACK_MAX_SWITCHES",
+        description="Maximum failover attempts per LLMService lifetime - "
+        "bounds thrashing between two dead providers instead of looping.",
+    )
+
     # FIX (2.2 Major): with no independent wall-clock timeout, an
     # undetected thrash loop could run up to MAX_STEPS * RATE_LIMIT_SECONDS
     # (~12.5 minutes at defaults) before MAX_STEPS kicked in. This gives an
@@ -833,6 +941,172 @@ class Settings(BaseSettings):
         "otherwise refuses to start in that configuration.",
     )
 
+    # ===== Task persistence (SQLite, API service mode) =====
+    # FIX (Task 1 - persistence): the API's task history (state, result,
+    # step events) used to live only in an in-memory dict - a container
+    # restart or redeploy wiped it. The durable copy now lives in a
+    # single-file SQLite database written through on every mutation. Path
+    # is explicit so Docker can point it at a mounted volume.
+    task_db_path: Path = Field(
+        default=Path("./data/tasks.db"),
+        alias="TASK_DB_PATH",
+        description="SQLite file for persistent API task history. Default "
+        "keeps it in the project working directory; in Docker set this to "
+        "a path under a mounted volume so history survives container "
+        "recreation.",
+    )
+
+    # TTL / cap for finished-task records. Previously hardcoded constants
+    # in src/api/app.py (TASK_TTL_HOURS=24 / MAX_FINISHED_TASKS=200); now
+    # real settings so the operator can tune retention without code edits.
+    # Each record carries its full steps buffer, so retention bounds both
+    # memory and DB size.
+    task_ttl_hours: float = Field(
+        default=24.0,
+        ge=0.0,
+        alias="TASK_TTL_HOURS",
+        description="Finished tasks older than this many hours are pruned "
+        "(from memory and SQLite) on every submit and by a background "
+        "sweep. 0 disables the age-based prune.",
+    )
+
+    max_finished_tasks: int = Field(
+        default=200,
+        ge=1,
+        alias="MAX_FINISHED_TASKS",
+        description="Keep at most this many newest finished tasks after "
+        "each pruning sweep.",
+    )
+
+    task_prune_interval_seconds: float = Field(
+        default=600.0,
+        ge=10.0,
+        alias="TASK_PRUNE_INTERVAL_SECONDS",
+        description="How often the background pruner sweeps finished tasks "
+        "(an idle API receives no submits, so submit-time pruning alone "
+        "would never fire).",
+    )
+
+    # ===== Task intake policy (sanitization, API service mode) =====
+    # Basic sanity/abuse checks applied BEFORE a submission enters the
+    # execution queue. The always-on part is pure input hygiene (length,
+    # emptiness, control chars); the content filter is a separate opt-in.
+    task_max_length: int = Field(
+        default=10000,
+        ge=1,
+        alias="TASK_MAX_LENGTH",
+        description="Maximum accepted length of the 'task' text. 0 is not "
+        "allowed - use a very large value instead of disabling: an "
+        "unbounded task text is a memory/token-burn abuse vector.",
+    )
+
+    enable_task_content_filter: bool = Field(
+        default=False,
+        alias="ENABLE_TASK_CONTENT_FILTER",
+        description="Opt-in regex blocklist over the submitted task text. "
+        "OFF by default so single-operator behavior is unchanged. This is "
+        "basic abuse protection, NOT moderation (see README.md).",
+    )
+
+    task_forbidden_patterns: str = Field(
+        default="",
+        alias="TASK_FORBIDDEN_PATTERNS",
+        description="Newline-separated case-insensitive regular expressions; "
+        "a match rejects the submission with rule=forbidden_pattern. Only "
+        "used when ENABLE_TASK_CONTENT_FILTER=true. Invalid regexes are "
+        "skipped with a warning, never crash intake.",
+    )
+
+    task_audit_log_path: Path = Field(
+        default=Path("./logs/rejected_tasks.log"),
+        alias="TASK_AUDIT_LOG_PATH",
+        description="Dedicated JSONL audit trail of policy rejections "
+        "(ts/rule/tenant_id/preview), separate from agent.log on purpose.",
+    )
+
+    # ===== Multi-tenancy (API service mode) =====
+    # Each tenant gets an isolated persistent browser profile under
+    # {USER_DATA_DIR}/tenants/{tenant_id}/ - cookies/localStorage never
+    # cross tenants. Default 1 keeps the historical single-context,
+    # strictly-sequential behavior; raise it only when you actually serve
+    # several tenants AND can afford one Chromium process per open context
+    # (roughly 100-300MB RAM each).
+    max_concurrent_tenant_contexts: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        alias="MAX_CONCURRENT_TENANT_CONTEXTS",
+        description="Maximum simultaneously OPEN persistent browser "
+        "contexts (= max tasks running in parallel, one per tenant). "
+        "Tasks beyond the limit are QUEUED, never rejected because of "
+        "this setting. Default 1 = legacy single-browser behavior.",
+    )
+
+    tenant_context_idle_ttl_seconds: float = Field(
+        default=600.0,
+        ge=30.0,
+        alias="TENANT_CONTEXT_IDLE_TTL_SECONDS",
+        description="Close a tenant's persistent browser context after "
+        "this many seconds without a task (frees the Chromium process; "
+        "the profile directory survives, so cookies/sessions do too).",
+    )
+
+    tenant_context_sweep_interval_seconds: float = Field(
+        default=60.0,
+        ge=10.0,
+        alias="TENANT_CONTEXT_SWEEP_INTERVAL_SECONDS",
+        description="How often the background sweeper checks for idle "
+        "tenant contexts to close.",
+    )
+
+    # ===== Rate limiting / usage accounting (API service mode) =====
+    rate_limit_concurrent_per_tenant: int = Field(
+        default=2,
+        ge=0,
+        alias="RATE_LIMIT_CONCURRENT_PER_TENANT",
+        description="Max simultaneously RUNNING tasks per tenant; a submit "
+        "beyond it is rejected with HTTP 429 (concurrent_limit). 0 disables "
+        "this check.",
+    )
+
+    rate_limit_tasks_per_hour: int = Field(
+        default=60,
+        ge=0,
+        alias="RATE_LIMIT_TASKS_PER_HOUR",
+        description="Sliding-window cap on ACCEPTED submissions per tenant "
+        "(default window: 1 hour); beyond it - HTTP 429 with Retry-After. "
+        "0 disables the window check.",
+    )
+
+    tenant_token_budget: int = Field(
+        default=0,
+        ge=0,
+        alias="TENANT_TOKEN_BUDGET",
+        description="OPTIONAL hard quota: once a tenant's cumulative LLM "
+        "tokens reach this, new submissions are refused (quota_exceeded). "
+        "0 = disabled (default). Process-lifetime counter, not calendar-"
+        "monthly - see SELF_REVIEW.md.",
+    )
+
+    token_cost_per_1k_usd: float = Field(
+        default=0.0,
+        ge=0.0,
+        alias="TOKEN_COST_PER_1K_USD",
+        description="Price per 1000 tokens used ONLY for the estimated_cost "
+        "figure in GET /usage/{tenant_id} - informational, never enforced.",
+    )
+
+    # ===== Observability =====
+    sentry_dsn: str = Field(
+        default="",
+        alias="SENTRY_DSN",
+        description="Optional Sentry DSN for unhandled-exception tracking. "
+        "Empty (default) = integration completely inactive. Requires the "
+        "sentry-sdk package; without it a set DSN is logged and skipped.",
+    )
+
+
+
     # ===== Debugging =====
     debug_mode: bool = Field(
         default=False,
@@ -894,6 +1168,10 @@ class Settings(BaseSettings):
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.download_allowed_dir.mkdir(parents=True, exist_ok=True)
+        self.task_db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Task intake policy: the audit trail's directory must exist before
+        # the first rejection tries to write there.
+        self.task_audit_log_path.parent.mkdir(parents=True, exist_ok=True)
         return self
 
 
