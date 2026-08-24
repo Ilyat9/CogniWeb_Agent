@@ -62,6 +62,9 @@ def make_settings(tmp_path, **overrides):
         "checkpoint_dir": tmp_path / "checkpoints",
         "reports_dir": tmp_path / "reports",
         "upload_allowed_dir": tmp_path / "uploads",
+        # Task 1 (persistence): per-test SQLite store - never the shared
+        # ./data/tasks.db.
+        "task_db_path": tmp_path / "tasks.db",
         "agent_step_delay": 0.0,
         "enable_context_compaction": False,
     }
@@ -265,17 +268,22 @@ class TestLifecycleHooks:
 
 
 class TestTaskStorePruning:
-    def _client(self, tmp_path):
+    # FIX (persistence): TASK_TTL_HOURS / MAX_FINISHED_TASKS moved from
+    # app-module constants into Settings fields (task_ttl_hours /
+    # max_finished_tasks) - retention is tuned via settings overrides now,
+    # not by monkeypatching module attributes.
+    def _client(self, tmp_path, **overrides):
         async def runner(task, starting_url):
             return TaskResult(success=True, summary="ok", steps_taken=1, total_duration_seconds=0)
 
-        client = fastapi_testclient.TestClient(create_app(runner, settings=make_settings(tmp_path)))
+        client = fastapi_testclient.TestClient(
+            create_app(runner, settings=make_settings(tmp_path, **overrides))
+        )
         client.__enter__()
         return client
 
-    def test_lru_cap_keeps_newest_finished(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(api_app, "MAX_FINISHED_TASKS", 2)
-        client = self._client(tmp_path)
+    def test_lru_cap_keeps_newest_finished(self, tmp_path):
+        client = self._client(tmp_path, max_finished_tasks=2)
         try:
             ids = []
             for _ in range(3):
@@ -294,9 +302,10 @@ class TestTaskStorePruning:
         finally:
             client.close()
 
-    def test_ttl_drops_ancient_finished(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(api_app, "TASK_TTL_HOURS", 0)  # everything is "ancient"
-        client = self._client(tmp_path)
+    def test_ttl_drops_ancient_finished(self, tmp_path):
+        # task_ttl_hours=0 disables the age check... so instead use a tiny
+        # TTL: every real submission is "ancient" relative to it.
+        client = self._client(tmp_path, task_ttl_hours=0.000001)
         try:
             task_id = client.post("/task", json={"task": "t"}).json()["task_id"]
             deadline = time.time() + 5
@@ -310,9 +319,7 @@ class TestTaskStorePruning:
         finally:
             client.close()
 
-    def test_running_task_never_pruned(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(api_app, "MAX_FINISHED_TASKS", 0)
-        monkeypatch.setattr(api_app, "TASK_TTL_HOURS", 0)
+    def test_running_task_never_pruned(self, tmp_path):
         release = asyncio.Event()
 
         async def slow_runner(task, starting_url):

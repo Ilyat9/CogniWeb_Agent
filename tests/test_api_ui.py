@@ -33,6 +33,10 @@ def make_settings(tmp_path, **overrides):
         "checkpoint_dir": tmp_path / "checkpoints",
         "reports_dir": tmp_path / "reports",
         "upload_allowed_dir": tmp_path / "uploads",
+        # Task 1 (persistence): keep each test's SQLite store inside its
+        # own tmp_path - otherwise every test would share ./data/tasks.db
+        # and leak task history into each other's assertions.
+        "task_db_path": tmp_path / "tasks.db",
     }
     base.update(overrides)
     return Settings(**base)

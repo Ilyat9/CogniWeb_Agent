@@ -58,7 +58,10 @@ RUN groupadd agentuser && \
     useradd -m -g agentuser agentuser
 
 # Создание необходимых директорий и выдача прав
-RUN mkdir -p /app/screenshots /app/logs /app/browser_data && \
+# /app/data: SQLite-файл истории задач (TASK_DB_PATH). Монтируйте его как
+# volume (-v ./data:/app/data), иначе история задач будет стираться при
+# пересоздании контейнера - в этом весь смысл персистентности.
+RUN mkdir -p /app/screenshots /app/logs /app/browser_data /app/data && \
     chown -R agentuser:agentuser /app
 
 # Копирование исходного кода с правильными правами
@@ -75,6 +78,7 @@ ENV PYTHONUNBUFFERED=1 \
     USER_DATA_DIR=/app/browser_data \
     SCREENSHOT_DIR=/app/screenshots \
     HEARTBEAT_FILE=/app/logs/heartbeat \
+    TASK_DB_PATH=/app/data/tasks.db \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # MODE (cli по умолчанию / api) пробрасывается в ENV, чтобы точка входа

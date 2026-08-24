@@ -4,6 +4,9 @@ pytest-asyncio>=0.21.0,<2.0.0
 pytest-cov>=4.1.0,<8.0.0
 pytest-watch>=4.2.0,<5.0.0
 
+# API-layer tests exercise the SQLite task store (src/api/task_store.py)
+aiosqlite>=0.19.0,<1.0.0
+
 # Code quality
 ruff>=0.1.0,<1.0.0
 black>=23.0.0,<26.0.0
