@@ -61,7 +61,7 @@ temperature = 0.1  # Детерминированность → меньше о�
 - ✅ **Docker multi-stage build** (non-root user, 450MB вместо 2GB)
 - ✅ **CI/CD с matrix testing** (Python 3.10-3.12, security scan)
 - ✅ **Graceful error handling** (captcha pause, JSON retry, .first fallback)
-- ✅ **Comprehensive docs** (README + ARCHITECTURE + CLAUDE.md)
+- ✅ **Comprehensive docs** (README + docs/ARCHITECTURE; CLAUDE.md — внутренний файл инструкций ИИ-агента, хранится только локально и не входит в публичный репозиторий)
 - ✅ **Type safety** (Pydantic models, type hints everywhere)
 
 **Чего НЕТ осознанно:**
