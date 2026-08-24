@@ -26,6 +26,8 @@ import ipaddress
 import logging
 import random
 import re
+import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,6 +44,7 @@ from playwright.async_api import (
 from ..config import Settings
 from ..core.exceptions import BrowserError
 from ..core.models import ActionResult
+from . import metrics as _metrics
 
 # FIX (4.3 Minor): this module previously had no `import logging` at all -
 # every diagnostic (cleanup errors, strict-mode-violation fallback
@@ -1833,3 +1836,195 @@ class BrowserService:
             return ActionResult(success=True, message=f"Scrolled {direction}")
         except Exception as e:
             return ActionResult(success=False, message=f"Scroll failed: {e}", error=str(e))
+
+
+# ============================================================================
+# Multi-tenancy (API service mode): a pool of per-tenant persistent contexts
+# ============================================================================
+
+_SAFE_TENANT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class TenantContextPool:
+    """Owns one isolated persistent browser context per tenant.
+
+    Why per-tenant launch_persistent_context (one Chromium process per open
+    tenant) instead of one shared Chromium with browser.new_context() per
+    tenant: only launch_persistent_context gets a real user_data_dir, i.e.
+    cookies/localStorage that SURVIVE process restarts - which is the whole
+    point of the isolation ("tenant A's session must never see tenant B's
+    cookies"). The cost is RAM: roughly 100-300MB per OPEN context; the pool
+    bounds it via MAX_CONCURRENT_TENANT_CONTEXTS and closes idle contexts
+    after TENANT_CONTEXT_IDLE_TTL_SECONDS (the profile DIRECTORY persists,
+    so sessions survive an idle close - only the process is freed).
+
+    Concurrency contract: a tenant's context is EXCLUSIVE - Playwright
+    refuses two persistent contexts on the same user_data_dir, and two tasks
+    sharing one profile would leak cookies into each other anyway. So at
+    most one task per tenant runs at any moment; acquire() for a busy or
+    over-limit pool WAITS (the caller's task stays queued), it never fails.
+
+    The service_factory injection exists for tests: fake BrowserServices
+    without launching anything.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        service_factory: Callable[[Settings], Any] | None = None,
+    ):
+        self.settings = settings
+        self._factory = service_factory if service_factory is not None else BrowserService
+        self._contexts: dict[str, Any] = {}
+        self._busy: set[str] = set()
+        self._last_used: dict[str, float] = {}
+        self.max_open = int(getattr(settings, "max_concurrent_tenant_contexts", 1))
+        self.idle_ttl_seconds = float(
+            getattr(settings, "tenant_context_idle_ttl_seconds", 600.0)
+        )
+        self.sweep_interval_seconds = float(
+            getattr(settings, "tenant_context_sweep_interval_seconds", 60.0)
+        )
+        self._lock = asyncio.Lock()
+
+    # ---- paths ---------------------------------------------------------
+
+    def tenant_data_dir(self, tenant_id: str) -> Path:
+        """Isolated profile dir for one tenant, derived from the base
+        USER_DATA_DIR so Docker volume mounts keep working unchanged."""
+        if not _SAFE_TENANT_ID.match(tenant_id or ""):
+            raise BrowserError(
+                f"invalid tenant_id {tenant_id!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"
+            )
+        base = Path(self.settings.user_data_dir or "./browser_data")
+        return base / "tenants" / tenant_id
+
+    def _make_settings(self, tenant_id: str) -> Settings:
+        data_dir = self.tenant_data_dir(tenant_id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # model_copy skips validators on purpose: every overridden field is
+        # already valid by construction.
+        return self.settings.model_copy(update={"user_data_dir": str(data_dir)})
+
+    # ---- acquire / release ---------------------------------------------
+
+    async def acquire(self, tenant_id: str = "default") -> Any:
+        """Check out the tenant's exclusive context, launching it lazily on
+        first use. WAITS while the tenant is busy; when the open-context
+        limit is reached, the least-recently-used IDLE context is evicted
+        (closed; its profile directory survives on disk) to make room.
+        Callers' tasks therefore queue instead of failing, without ever
+        being blocked indefinitely by cold, unused contexts."""
+        evict_service: Any = None
+        while True:
+            async with self._lock:
+                existing = self._contexts.get(tenant_id)
+                if tenant_id not in self._busy and (
+                    existing is not None or len(self._contexts) < self.max_open
+                ):
+                    self._busy.add(tenant_id)
+                    launching = existing is None
+                    break
+                # Full (or tenant busy): look for an idle victim to evict -
+                # NEVER a busy one; a running task's browser is untouchable.
+                if tenant_id not in self._busy:
+                    idle = [
+                        t
+                        for t in self._contexts
+                        if t not in self._busy and t != tenant_id
+                    ]
+                    if idle:
+                        victim = min(idle, key=lambda t: self._last_used.get(t, 0.0))
+                        evict_service = self._contexts.pop(victim)
+                        self._last_used.pop(victim, None)
+                        self._busy.add(tenant_id)
+                        launching = True
+                        break
+                # Polling (not Condition.wait) keeps this method simple and
+                # safe against missed notifications from the sync release();
+                # 50ms is negligible next to multi-second tasks.
+            await asyncio.sleep(0.05)
+
+        if evict_service is not None:
+            logger.info("Evicting idle tenant context to make room (LRU)")
+            try:
+                await evict_service.close()
+            except Exception as e:  # noqa: BLE001 - cleanup never raises
+                logger.warning(f"Evicted tenant context close failed: {e}")
+
+        service = existing
+        if service is None:
+            try:
+                service = self._factory(self._make_settings(tenant_id))
+                await service.start()
+            except Exception:
+                async with self._lock:
+                    self._busy.discard(tenant_id)
+                raise
+            self._contexts[tenant_id] = service
+            logger.info(
+                "Tenant context started: tenant=%s dir=%s (open=%d/%d)",
+                tenant_id,
+                self.tenant_data_dir(tenant_id),
+                len(self._contexts),
+                self.max_open,
+            )
+        _metrics.set_browser_contexts(len(self._contexts))
+        self._last_used[tenant_id] = time.monotonic()
+        return service
+
+    def release(self, tenant_id: str = "default") -> None:
+        """Return the tenant's context to the pool (it STAYS OPEN - the
+        next task from this tenant reuses warm cookies). Idle closing is
+        the sweeper's job."""
+        self._busy.discard(tenant_id)
+        self._last_used[tenant_id] = time.monotonic()
+
+    # ---- lifecycle ------------------------------------------------------
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {"open": len(self._contexts), "busy": len(self._busy)}
+
+    async def close_idle(self) -> int:
+        """Close contexts whose tenant has had no activity for longer than
+        the idle TTL. Busy tenants are never touched. Returns how many
+        contexts were closed."""
+        to_close: list[str] = []
+        async with self._lock:
+            now = time.monotonic()
+            for tenant_id, last_used in self._last_used.items():
+                if tenant_id in self._busy or tenant_id not in self._contexts:
+                    continue
+                if now - last_used > self.idle_ttl_seconds:
+                    to_close.append(tenant_id)
+        closed = 0
+        for tenant_id in to_close:
+            service = self._contexts.pop(tenant_id, None)
+            if service is None:
+                continue
+            try:
+                await service.close()
+                closed += 1
+                logger.info(f"Tenant context closed (idle > TTL): tenant={tenant_id}")
+            except Exception as e:  # noqa: BLE001 - cleanup never raises
+                logger.warning(f"Tenant context close failed (tenant={tenant_id}): {e}")
+        _metrics.set_browser_contexts(len(self._contexts))
+        return closed
+
+    async def close_all(self) -> None:
+        """Shut down every context regardless of state (app shutdown path)."""
+        async with self._lock:
+            tenants = list(self._contexts.keys())
+        for tenant_id in tenants:
+            service = self._contexts.pop(tenant_id, None)
+            if service is None:
+                continue
+            try:
+                await service.close()
+            except Exception as e:  # noqa: BLE001 - cleanup never raises
+                logger.warning(f"Tenant context close failed (tenant={tenant_id}): {e}")
+        self._busy.clear()
+        self._last_used.clear()
+        _metrics.set_browser_contexts(len(self._contexts))
+
