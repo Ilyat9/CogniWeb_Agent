@@ -1,15 +1,21 @@
 # ============================================================================
-# CogniWeb Agent - Direct dependencies (compile with pip-compile)
+# CogniWeb Agent - Direct dependencies
 # ============================================================================
-# base.txt is generated from this file via `make update-deps`
-# (pip-compile --generate-hashes requirements/base.in -o requirements/base.txt).
-#
 # VERSION POLICY: every dependency carries an UPPER BOUND (< next.major)
 # so a clean install can never silently pull an untested major release
 # (e.g. openai jumped 1.x -> 3.x with renamed exception classes while this
 # code was written against 1.x semantics). The exact tested set is frozen
 # in lock.txt; raise a bound only after running the test
 # suite against the new major.
+#
+# NOTE ON HASH-PINNING (TZ fix #6, docs vs code drift): an earlier version
+# of this header promised `pip-compile --generate-hashes`, but neither
+# base.txt (curated bounded ranges) nor lock.txt (plain `pip freeze`
+# snapshot) carries --hash= entries today. Supply-chain protection is
+# therefore provided by exact version pins + `pip-audit` in CI, NOT by
+# per-file hashes. If you enable hash-pinning later, regenerate with:
+#   pip-compile --generate-hashes requirements/base.in -o requirements/base.txt
+# and update this comment to match reality.
 # ============================================================================
 
 # Core Dependencies

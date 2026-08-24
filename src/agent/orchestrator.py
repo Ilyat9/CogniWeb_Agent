@@ -1517,6 +1517,26 @@ Always think step-by-step and explain your reasoning."""
                     continue
         return normalized
 
+    # FIX (element_id type consistency): ONE coercion point for every tool
+    # that takes an element_id. Previously click_element coerced "5" -> 5
+    # while type_text/select_option hard-rejected non-int values with
+    # InvalidType - so the SAME model output succeeded or failed depending
+    # on which tool it targeted (a model-specific, order-dependent bug).
+    # _normalize_action_args() already coerces the common string/whole-float
+    # forms centrally; this helper is the second line of defense applied
+    # identically in every branch, so garbage ("abc", [1]) still fails
+    # loudly with InvalidType instead of being silently accepted.
+    @staticmethod
+    def _coerce_element_id(raw: Any) -> int | None:
+        """Coerce an LLM-provided element_id to int. Returns None when the
+        value cannot be coerced (caller reports InvalidType). Accepts both
+        5 and "5" (and whole floats like 5.0), mirroring what a JSON number
+        vs string looks like across different LLM providers."""
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     async def _execute_action(self, action: AgentAction) -> ActionResult:
         """
         Execute agent action via browser service.
@@ -1544,6 +1564,7 @@ Always think step-by-step and explain your reasoning."""
 
         elif tool == "click_element":
             element_id = args.get("element_id")
+            coerced = self._coerce_element_id(element_id)
 
             if element_id is None:
                 result = ActionResult(
@@ -1551,36 +1572,30 @@ Always think step-by-step and explain your reasoning."""
                     message="click_element requires 'element_id' parameter",
                     error="MissingElementId",
                 )
-            # elif not isinstance(element_id, int):
-            # result = ActionResult(
-            #  success=False,
-            # message=f"element_id must be integer, got {type(element_id).__name__}",
-            # error="InvalidType"
-            # )
+            elif coerced is None:
+                # Same coercion contract as type_text/select_option/hover/
+                # upload/download - see _coerce_element_id.
+                result = ActionResult(
+                    success=False,
+                    message=f"element_id must be numeric, got {type(element_id).__name__}: {element_id}",
+                    error="InvalidType",
+                )
             else:
                 # FIXED: Validate element_id exists in current map
-                try:
-                    # 2. Пытаемся превратить в int (съест и 1, и "1")
-                    element_id = int(element_id)
-                    if element_id not in self.browser.element_map:
-                        result = self._get_invalid_element_error(element_id)
-                    else:
-                        result = await self.browser.click_element_safe(element_id)
-                        print(f"🖱️  Clicked element {element_id}")
+                if coerced not in self.browser.element_map:
+                    result = self._get_invalid_element_error(coerced)
+                else:
+                    result = await self.browser.click_element_safe(coerced)
+                    print(f"🖱️  Clicked element {coerced}")
 
-                        new_obs = await self._get_observation()
-                        self.previous_observation = new_obs
-                except (ValueError, TypeError):
-                    result = ActionResult(
-                        success=False,
-                        message=f"element_id must be numeric, got {type(element_id).__name__}: {element_id}",
-                        error="InvalidType",
-                    )
+                    new_obs = await self._get_observation()
+                    self.previous_observation = new_obs
 
         elif tool == "type_text":
             element_id = args.get("element_id")
             text = args.get("text", "")
             press_enter = str(args.get("press_enter", "False")).lower() == "true"
+            coerced = self._coerce_element_id(element_id)
 
             if element_id is None:
                 result = ActionResult(
@@ -1588,8 +1603,11 @@ Always think step-by-step and explain your reasoning."""
                     message="type_text requires 'element_id' parameter",
                     error="MissingElementId",
                 )
-
-            elif not isinstance(element_id, int):
+            elif coerced is None:
+                # FIX (element_id type consistency): used to hard-reject any
+                # non-int (e.g. "5") while click_element accepted the same
+                # value - one tool's InvalidType was another tool's success.
+                # Now every branch shares _coerce_element_id.
                 result = ActionResult(
                     success=False,
                     message=f"element_id must be integer, got {type(element_id).__name__}",
@@ -1603,23 +1621,16 @@ Always think step-by-step and explain your reasoning."""
                 )
             else:
                 # FIXED: Validate element_id exists in current map
-                try:
-                    element_id = int(element_id)
-                    if element_id not in self.browser.element_map:
-                        result = self._get_invalid_element_error(element_id)
-                    else:
-                        result = await self.browser.type_text(element_id, text, press_enter)
-                        print(f"⌨️  Typed into element {element_id}")
-                except (ValueError, TypeError):
-                    result = ActionResult(
-                        success=False,
-                        message=f"element_id must be numeric, got {type(element_id).__name__}",
-                        error="InvalidType",
-                    )
+                if coerced not in self.browser.element_map:
+                    result = self._get_invalid_element_error(coerced)
+                else:
+                    result = await self.browser.type_text(coerced, text, press_enter)
+                    print(f"⌨️  Typed into element {coerced}")
 
         elif tool == "select_option":
             element_id = args.get("element_id")
             value = args.get("value", "")
+            coerced = self._coerce_element_id(element_id)
 
             if element_id is None:
                 result = ActionResult(
@@ -1627,7 +1638,10 @@ Always think step-by-step and explain your reasoning."""
                     message="select_option requires 'element_id' parameter",
                     error="MissingElementId",
                 )
-            elif not isinstance(element_id, int):
+            elif coerced is None:
+                # FIX (element_id type consistency): same shared coercion
+                # contract as click_element/type_text (was a strict
+                # isinstance check that rejected "5").
                 result = ActionResult(
                     success=False,
                     message=f"element_id must be integer, got {type(element_id).__name__}",
@@ -1635,11 +1649,11 @@ Always think step-by-step and explain your reasoning."""
                 )
             else:
                 # FIXED: Validate element_id exists in current map
-                if element_id not in self.browser.element_map:
-                    result = self._get_invalid_element_error(element_id)
+                if coerced not in self.browser.element_map:
+                    result = self._get_invalid_element_error(coerced)
                 else:
-                    result = await self.browser.select_option(element_id, value)
-                    print(f"📋 Selected option in element {element_id}")
+                    result = await self.browser.select_option(coerced, value)
+                    print(f"📋 Selected option in element {coerced}")
 
         elif tool == "upload_file":
             # FIX (1.3 / Docs vs Code Drift #6): upload_file was advertised
@@ -1648,12 +1662,19 @@ Always think step-by-step and explain your reasoning."""
             # unconditionally fell through to "Unknown tool: upload_file".
             element_id = args.get("element_id")
             file_path = args.get("file_path", "")
+            coerced = self._coerce_element_id(element_id)
 
             if element_id is None:
                 result = ActionResult(
                     success=False,
                     message="upload_file requires 'element_id' parameter",
                     error="MissingElementId",
+                )
+            elif coerced is None:
+                result = ActionResult(
+                    success=False,
+                    message=f"element_id must be numeric, got: {element_id}",
+                    error="InvalidType",
                 )
             elif not file_path:
                 result = ActionResult(
@@ -1662,20 +1683,11 @@ Always think step-by-step and explain your reasoning."""
                     error="MissingFilePath",
                 )
             else:
-                try:
-                    element_id = int(element_id)
-                except (ValueError, TypeError):
-                    result = ActionResult(
-                        success=False,
-                        message=f"element_id must be numeric, got: {element_id}",
-                        error="InvalidType",
-                    )
+                if coerced not in self.browser.element_map:
+                    result = self._get_invalid_element_error(coerced)
                 else:
-                    if element_id not in self.browser.element_map:
-                        result = self._get_invalid_element_error(element_id)
-                    else:
-                        result = await self.browser.upload_file(element_id, file_path)
-                        print(f"📎 Upload file into element {element_id}: {result.message}")
+                    result = await self.browser.upload_file(coerced, file_path)
+                    print(f"📎 Upload file into element {coerced}: {result.message}")
 
         elif tool == "scroll_page":
             direction = args.get("direction", "down")
@@ -1791,26 +1803,24 @@ Always think step-by-step and explain your reasoning."""
         elif tool == "hover_element":
             # Task 2: hover for menus/tooltips/hover-only controls.
             element_id = args.get("element_id")
+            coerced = self._coerce_element_id(element_id)
             if element_id is None:
                 result = ActionResult(
                     success=False,
                     message="hover_element requires 'element_id' parameter",
                     error="MissingElementId",
                 )
+            elif coerced is None:
+                result = ActionResult(
+                    success=False,
+                    message=f"element_id must be numeric, got {type(element_id).__name__}",
+                    error="InvalidType",
+                )
+            elif coerced not in self.browser.element_map:
+                result = self._get_invalid_element_error(coerced)
             else:
-                try:
-                    element_id = int(element_id)
-                    if element_id not in self.browser.element_map:
-                        result = self._get_invalid_element_error(element_id)
-                    else:
-                        result = await self.browser.hover_element(element_id)
-                        print(f"🖱️  Hovered element {element_id}")
-                except (ValueError, TypeError):
-                    result = ActionResult(
-                        success=False,
-                        message=f"element_id must be numeric, got {type(element_id).__name__}",
-                        error="InvalidType",
-                    )
+                result = await self.browser.hover_element(coerced)
+                print(f"🖱️  Hovered element {coerced}")
 
         elif tool == "press_key":
             # Task 2: page-level keyboard events without a specific element.
@@ -1958,26 +1968,24 @@ Always think step-by-step and explain your reasoning."""
             # into the operator-controlled downloads dir).
             element_id = args.get("element_id")
             timeout_ms = args.get("timeout_ms")
+            coerced = self._coerce_element_id(element_id)
             if element_id is None:
                 result = ActionResult(
                     success=False,
                     message="download_file requires 'element_id' parameter",
                     error="MissingElementId",
                 )
+            elif coerced is None:
+                result = ActionResult(
+                    success=False,
+                    message=f"element_id must be numeric, got {type(element_id).__name__}",
+                    error="InvalidType",
+                )
+            elif coerced not in self.browser.element_map:
+                result = self._get_invalid_element_error(coerced)
             else:
-                try:
-                    element_id = int(element_id)
-                    if element_id not in self.browser.element_map:
-                        result = self._get_invalid_element_error(element_id)
-                    else:
-                        result = await self.browser.download_file(element_id, timeout_ms)
-                        print(f"⬇️  download_file: {result.message}")
-                except (ValueError, TypeError):
-                    result = ActionResult(
-                        success=False,
-                        message=f"element_id must be numeric, got {type(element_id).__name__}",
-                        error="InvalidType",
-                    )
+                result = await self.browser.download_file(coerced, timeout_ms)
+                print(f"⬇️  download_file: {result.message}")
 
         elif tool == "find_element_by_text":
             # Task 2: semantic search over the LIVE page (not just the

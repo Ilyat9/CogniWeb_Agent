@@ -216,6 +216,32 @@ class Settings(BaseSettings):
             )
 
         return v
+    # ===== Reasoning-Model Hardening =====
+    # FIX (local reasoning models break JSON parsing): reasoning/thinking
+    # models (DeepSeek R1 distills, Qwen3 with thinking enabled) wrap their
+    # deliberation in <think>...</think> before the final answer. When that
+    # deliberation mentions JSON structure ("the format is {\"tool\": ...}"),
+    # the brace-scanning fallbacks in _extract_json_from_response could grab
+    # a brace pair from INSIDE the reasoning instead of the final action.
+    # The strip step in LLMService._strip_reasoning_blocks removes these
+    # blocks BEFORE any JSON extraction - this setting controls WHICH tags
+    # are treated as reasoning markers (comma-separated, angle brackets
+    # optional). This is defense-in-depth: for local deployments you should
+    # ALSO disable thinking at the server level where possible (--reasoning-
+    # parser / chat template kwargs in vLLM, /no_think or think:<false> in
+    # Ollama/LM Studio) - see docs/LOCAL_MODELS.md.
+    reasoning_strip_tags: str = Field(
+        default="think,reasoning",
+        alias="REASONING_STRIP_TAGS",
+        description=(
+            "Comma-separated tag names whose <tag>...</tag> blocks are "
+            "stripped from model responses before JSON extraction "
+            "(defense-in-depth for local reasoning/thinking models). "
+            "Empty string disables stripping entirely."
+        ),
+    )
+
+    # ===== Network Configuration =====
 
     # ===== Network Configuration =====
     proxy_url: str | None = Field(

@@ -143,6 +143,17 @@ class LLMService:
         # orchestrators of a run, including run_parallel_agents).
         self.rate_limiter = LLMRateLimiter()
 
+        # FIX (local reasoning models break JSON parsing): parse the
+        # configured REASONING_STRIP_TAGS once. Angle brackets are optional
+        # in the setting ("think" or "<think>"); empty entries and an empty
+        # setting (stripping disabled) are both tolerated.
+        raw_tags = str(getattr(self.settings, "reasoning_strip_tags", "") or "")
+        self._reasoning_strip_tags: tuple[str, ...] = tuple(
+            tag.strip().strip("<>").lower()
+            for tag in raw_tags.split(",")
+            if tag.strip().strip("<>")
+        )
+
     @property
     def active_provider_mode(self) -> str:
         """Provider mode requests currently go to ('cloud' | 'local') -
@@ -499,9 +510,55 @@ class LLMService:
 
         return content
 
+    def _strip_reasoning_blocks(self, content: str) -> str:
+        """FIX (local reasoning models break JSON parsing): remove
+        reasoning/thinking blocks (<think>...</think> and friends) BEFORE
+        any JSON extraction runs.
+
+        Why: DeepSeek R1 distills, Qwen3 with thinking enabled (and other
+        local reasoning models) emit deliberation wrapped in such tags
+        before the final answer. That deliberation often MENTIONS JSON
+        ("the format is {\"tool\": ...}"), so the brace-scanning fallbacks
+        below could lock onto a brace pair from inside the reasoning -
+        producing either a parse failure or, worse, a technically valid but
+        semantically wrong action.
+
+        Two passes per configured tag:
+        1. paired blocks: <tag ...>...</tag> (non-greedy, DOTALL - handles
+           multiple blocks and attributes/whitespace in the opener);
+        2. an UNPAIRED leftover opener (truncated generation that never
+           emitted the closing tag): everything from the first remaining
+           opener to the end is treated as unfinished reasoning. If a final
+           answer existed there, the response was truncated mid-thought
+           anyway and would not contain a complete action.
+
+        This is defense-in-depth: operators of local deployments should
+        ALSO disable thinking at the server level where possible (see
+        docs/LOCAL_MODELS.md). Configure via REASONING_STRIP_TAGS; empty
+        setting disables stripping entirely.
+        """
+        stripped = content
+        for tag in self._reasoning_strip_tags:
+            paired = re.compile(rf"<{tag}\b[^>]*>.*?</{tag}\s*>", re.DOTALL | re.IGNORECASE)
+            if paired.search(stripped):
+                stripped = paired.sub("", stripped)
+            # Truncated generation: an opener with no closing tag anywhere.
+            leftover = re.search(rf"<{tag}\b[^>]*>", stripped, re.IGNORECASE)
+            if leftover:
+                logger.debug(
+                    "Stripped unclosed <%(tag)s> block (no </%(tag)s>) from LLM response",
+                    {"tag": tag},
+                )
+                stripped = stripped[: leftover.start()]
+        return stripped
+
     def _extract_json_from_response(self, content: str) -> str:
         if not content:
             return ""
+
+        # Reasoning-block strip FIRST - before code-block regex or any
+        # brace scanning can see deliberation text as candidate JSON.
+        content = self._strip_reasoning_blocks(content)
 
         code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if code_block_match:

@@ -208,6 +208,8 @@ MODEL_NAME=your-loaded-model-name  # без ограничения формат�
 
 **Проверка:** поднять LM Studio, указать `LLM_PROVIDER_MODE=local` и адрес сервера, прогнать простую задачу (например, открыть страницу и извлечь заголовок) — агент должен пройти цикл Observe→Think→Act без срабатывания валидаторов, рассчитанных на OpenRouter.
 
+> **Полный гайд по локальным моделям** — рекомендации конкретных моделей под разное железо, предупреждение про reasoning/thinking-модели и готовый `docker compose`-стек «агент + Ollama» см. в [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md).
+
 ### 2. Обобщение DOM-логики за пределы hh.ru
 
 Часть логики поиска/клика элементов была отлажена именно на hh.ru (дублирование desktop/mobile разметки, ARIA-навигация в SPA). Это расширено до более общей лестницы деградации:
@@ -415,9 +417,10 @@ DOM_MAX_TOKENS_ESTIMATE=10000     # лимит токенов для DOM
 LOOP_DETECTION_WINDOW=3           # окно для проверки
 MAX_IDENTICAL_STATES=5            # терпимость к повторам
 
-# Провайдер LLM (по умолчанию — облако/OpenRouter, без изменений поведения)
-LLM_PROVIDER_MODE=cloud           # или "local" для LM Studio и аналогов
+# Провайдер LLM (по умолчанию — облако/OpenRouter, без изменения поведения)
+LLM_PROVIDER_MODE=cloud           # или "local" для LM Studio/Ollama/vLLM (см. docs/LOCAL_MODELS.md)
 LOCAL_RATE_LIMIT_SECONDS=1.0      # пауза между запросами только в local-режиме
+REASONING_STRIP_TAGS=think,reasoning  # <tag>-блоки, вырезаемые перед JSON-парсингом (reasoning-модели; "" = выключить)
 
 # Context Compaction (сжатие истории для длинных сессий)
 ENABLE_CONTEXT_COMPACTION=true

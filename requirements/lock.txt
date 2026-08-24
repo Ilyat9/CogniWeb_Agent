@@ -7,6 +7,12 @@
 # actually passed with - deploy from it when reproducibility matters:
 #   pip install -r requirements/lock.txt
 # Regenerate after intentional upgrades:  pip freeze > requirements/lock.txt
+#
+# SCOPE NOTE (TZ fix #6): this is a PLAIN freeze snapshot - versions are
+# pinned exactly, but there are NO --hash= entries (see requirements/
+# base.in for why). It protects against version drift between installs,
+# not against a package being replaced on PyPI under the same version;
+# known-vulnerable versions are caught by pip-audit in CI instead.
 # ============================================================================
 annotated-doc==0.0.5
 annotated-types==0.8.0

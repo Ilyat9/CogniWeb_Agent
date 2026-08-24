@@ -1,0 +1,73 @@
+# ==============================================================================
+# Локальный стек "агент + модель" одним подъёмом: `docker compose up -d`
+#
+# Что делает:
+#   - поднимает Ollama в отдельном контейнере с постоянным volume для весов
+#     моделей (ollama_models) - модели НЕ перекачиваются после рестарта;
+#   - собирает и запускает агента (Dockerfile, MODE=api) в той же
+#     compose-сети, где он видит Ollama по имени хоста `ollama`;
+#   - агент стартует только после того, как Ollama ответит на healthcheck
+#     (depends_on: condition: service_healthy).
+#
+# Перед первым запуском загрузите модель:
+#   docker compose exec ollama ollama pull qwen3:4b
+# (или другую - рекомендации по моделям и железу см. docs/LOCAL_MODELS.md)
+#
+# Безопасность: API агента публикуется на 8000. Задайте токен:
+#   API_AUTH_TOKEN="<>=16 символов" docker compose up -d
+# Без токена контейнер откажется стартовать на 0.0.0.0 - это защита самого
+# проекта (см. src/api/app.py::_enforce_public_bind_auth_policy), а не баг.
+# Для доверенной изолированной сети можно явно разрешить запуск без токена:
+#   ALLOW_UNAUTHENTICATED_PUBLIC_BIND=true docker compose up -d
+# ==============================================================================
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cogniweb-ollama
+    volumes:
+      # Веса моделей живут между рестартами/пересозданиями контейнера.
+      - ollama_models:/root/.ollama
+    # Healthcheck: `ollama ls` отвечает только у живого сервера. Агент не
+    # начнёт стартовать, пока это условие не выполнено.
+    healthcheck:
+      test: ["CMD", "ollama", "ls"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      args:
+        MODE: api
+    container_name: cogniweb-agent
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      MODE: api
+      # Локальный режим: отключает облачные валидаторы OpenRouter и
+      # переключает rate-limit на LOCAL_RATE_LIMIT_SECONDS.
+      LLM_PROVIDER_MODE: local
+      # Имя хоста `ollama` резолвится внутри compose-сети; /v1 -
+      # OpenAI-совместимый эндпоинт Ollama.
+      API_BASE_URL: http://ollama:11434/v1
+      MODEL_NAME: ${MODEL_NAME:-qwen3:4b}
+      # Токен обязателен при публикации порта наружу (см. шапку файла).
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      ALLOW_UNAUTHENTICATED_PUBLIC_BIND: ${ALLOW_UNAUTHENTICATED_PUBLIC_BIND:-false}
+      HEADLESS: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Персистентность браузерного профиля, истории задач и скриншотов.
+      - ./browser_data:/app/browser_data
+      - ./data:/app/data
+      - ./screenshots:/app/screenshots
+    restart: unless-stopped
+
+volumes:
+  ollama_models:

@@ -1030,20 +1030,32 @@ def _reports_dir(app: FastAPI) -> Path:
     return Path("./reports")
 
 
+# "All interfaces" literals treated as a PUBLIC bind by the startup guard
+# below. These are DETECTION values only - nothing in this codebase ever
+# binds to them; keeping them in ONE constant gives bandit's B104 exactly
+# one reviewable site next to this rationale (B104 keys off the "0.0.0.0"
+# literal even in a pure comparison, so the suppression marker on the line
+# below is a triaged false positive - TZ #5).
+_PUBLIC_BIND_HOSTS = ("0.0.0.0", "::", "")  # nosec
+
+
 def _detect_public_bind(settings: Any) -> bool:
     """True when the API will listen on a non-loopback 'all interfaces'
     address - either via Settings (API_BIND_HOST) or via an explicit
     `--host` on the uvicorn command line (as the Dockerfile CMD does,
     which bypasses Settings entirely)."""
-    # NOTE: the "0.0.0.0"/"::" literals below are DETECTION values, not a
-    # bind call - this guard is what REFUSES to start on them (see
-    # _enforce_public_bind_auth_policy). Hence the targeted nosec B104.
+    # NOTE: these are DETECTION values, not a bind call - this guard is
+    # what REFUSES to start on them (see _enforce_public_bind_auth_policy).
+    # The literals live in ONE module-level constant so bandit's B104 has
+    # exactly one annotated site instead of per-comparison `# nosec`
+    # sprinkled through the logic (TZ fix #5: no WARNING noise, no hidden
+    # suppressions - the single rationale comment sits next to the literal).
     host = str(getattr(settings, "api_bind_host", "127.0.0.1") or "").strip()
-    if host in ("0.0.0.0", "::", ""):  # nosec B104
+    if host in _PUBLIC_BIND_HOSTS:
         return True
     argv = sys.argv
     for i, arg in enumerate(argv[:-1]):
-        if arg == "--host" and str(argv[i + 1]).strip() in ("0.0.0.0", "::", ""):  # nosec B104
+        if arg == "--host" and str(argv[i + 1]).strip() in _PUBLIC_BIND_HOSTS:
             return True
     return False
 
