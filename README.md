@@ -286,6 +286,8 @@ make run-ui       # API + UI на http://localhost:8000
 - **Path-traversal-гарды** файловых эндпоинтов: путь скриншота резолвится и обязан оставаться внутри `SCREENSHOT_DIR`; `run_id` — строгий паттерн + resolve-проверка внутри `REPORTS_DIR`.
 - **CI-гвард против капча-солверов**: `make check-no-captcha-solvers` (входит в `make ci`) — механическая гарантия, что `2captcha/anti-captcha/capmonster/capsolver/gatesolve` не протащены в `src/` или requirements.
 - **Untrusted-контент**: результаты всех content-возвращающих инструментов (`extract_page_content`, `extract_structured_data`, `find_element_by_text`, `query_dom`) попадают в историю диалога только в обёртке `<untrusted_page_content>` — тот же механизм, что у DOM-наблюдения; регрессионный тест фиксирует.
+- **Санитизация входящих задач** (`POST /task`, до очереди): всегда — гигиена ввода (`TASK_MAX_LENGTH`, дефолт 10000; пустой/пробельный текст; управляющие символы; текст без единого алфавитно-цифрового символа), отклонение = HTTP 400 с машинным именем правила. Опционально (выключено по умолчанию) — контент-фильтр: `ENABLE_TASK_CONTENT_FILTER=true` + `TASK_FORBIDDEN_PATTERNS` (построчные case-insensitive regex). Каждое отклонение пишется в отдельный JSONL-аудит `TASK_AUDIT_LOG_PATH`. ⚠️ Это **базовая защита от очевидных злоупотреблений, а НЕ модерация**: статический regex не классифицирует намерение и обходится перефразированием; для настоящего публичного сервиса нужен более серьёзный уровень (умная классификация, человеческий ревью) — возможности фильтра сознательно не переоцениваются.
+
 
 **Известные backlog-пункты (осознанно вне скоупа):** ротация/очистка `DOWNLOAD_ALLOWED_DIR` (файлы копятся на долгоживущей машине — до реализации чистить вручную или внешним cron); rate-limit на уровне самого API (нужен при деплое с `API_BIND_HOST` ≠ 127.0.0.1; LLM-рейт-лимит `_wait_for_rate_limit` закрывает только провайдера).
 
@@ -376,6 +378,8 @@ docker run --rm -v $(pwd)/.env:/app/.env:ro cogniweb-agent
 ├── QUICK_START.md               # Подробная инструкция по установке
 ├── ARCHITECTURE.md              # Архитектурная документация
 ├── CLAUDE.md                    # Руководство для Claude Code
+├── docs/DEPLOYMENT.md           # Продакшен-деплой (nginx/TLS/systemd/бэкапы)
+├── docs/MONITORING.md           # Prometheus /metrics, /health, Sentry
 └── LICENSE.md                   # MIT License
 ```
 
@@ -602,4 +606,6 @@ MIT License — см. [LICENSE.md](LICENSE.md)
 **Документация**:
 - [Быстрый старт](QUICK_START.md)
 - [Архитектура](ARCHITECTURE.md)
+- [Продакшен-деплой](docs/DEPLOYMENT.md)
+- [Мониторинг](docs/MONITORING.md)
 - [Руководство для Claude Code](CLAUDE.md)
