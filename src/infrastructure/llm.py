@@ -16,9 +16,23 @@ level that owns it, do not duplicate):
    must change first, which only the orchestrator can do.
 
 Consequence for future edits: a NEW transport-ish failure belongs in the
-except-chain below (mapped to NetworkError); a NEW "model answered but
-unusable" failure belongs in the orchestrator's recovery path (LLMError).
-Never add a second tenacity layer or retry LLMError here.
+except-chain of _chat_completion() below (mapped to NetworkError); a NEW
+"model answered but unusable" failure belongs in the orchestrator's
+recovery path (LLMError). Never add a second tenacity layer or retry
+LLMError here.
+
+FAILOVER (Task 2 - LLM resilience): when a fallback provider is
+configured (LLM_FALLBACK_* settings) and the ACTIVE provider fails at the
+CONNECTION level (timeout / connect error / APIConnectionError - NOT 429,
+see _chat_completion), _consider_failover() health-checks the fallback's
+/models endpoint and, if it answers, transparently switches subsequent
+attempts to it. The switch rides the EXISTING tenacity retry of
+generate_action/generate_text: attempt 1 fails on primary -> failover ->
+attempts 2-3 run on the fallback. No new retry layer is introduced.
+Failover is sticky (no automatic switch-back - no ping-pong between two
+flapping providers within one process lifetime) and bounded
+(LLM_FALLBACK_MAX_SWITCHES attempts + a cooldown after an unhealthy
+check). Unconfigured fallback = byte-for-byte old behavior.
 """
 
 import asyncio
@@ -40,8 +54,14 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from ..config import Settings
 from ..core.exceptions import LLMError, NetworkError
 from ..core.models import AgentAction
+from . import metrics as _metrics
 
 logger = logging.getLogger(__name__)
+
+# After one failed fallback health check, wait this long before pinging
+# the fallback again - so the tenacity retries of a single generate_*
+# call don't fire a health check per attempt against a dead server.
+_FAILOVER_COOLDOWN_SECONDS = 30.0
 
 
 class LLMRateLimiter:
@@ -99,6 +119,19 @@ class LLMService:
 
         self._connection_verified = False
 
+        # Task 2 (failover): optional fallback provider state. Everything
+        # stays inert until a connection-level failure occurs AND
+        # LLM_FALLBACK_PROVIDER_MODE is configured.
+        self._fallback_client: AsyncOpenAI | None = None
+        self._fallback_http_client: httpx.AsyncClient | None = None
+        self._health_client: httpx.AsyncClient | None = None
+        self._fallback_active = False
+        self._failover_attempts_used = 0
+        # After one unhealthy check, back off before pinging again - so a
+        # single generate_action() call's tenacity retries don't hammer a
+        # dead fallback server with a health check per attempt.
+        self._failover_cooldown_until = 0.0
+
         # 3.1: real token accounting from the API's usage block. The
         # OpenAI-compatible response has always carried usage.prompt_tokens
         # / completion_tokens, but nothing read it - the operator had no
@@ -110,14 +143,24 @@ class LLMService:
         # orchestrators of a run, including run_parallel_agents).
         self.rate_limiter = LLMRateLimiter()
 
+    @property
+    def active_provider_mode(self) -> str:
+        """Provider mode requests currently go to ('cloud' | 'local') -
+        the fallback once failover has happened, else the primary."""
+        if self._fallback_active:
+            return self.settings.llm_fallback_provider_mode
+        return self.settings.llm_provider_mode
+
     async def wait_for_rate_limit(self) -> None:
-        """Pace requests per the configured interval for the active provider
-        mode. Safe to call concurrently: all callers share one clock (see
+        """Pace requests per the configured interval for the ACTIVE provider
+        mode (the fallback's pacing class applies after failover - e.g. a
+        local->cloud failover must start respecting the cloud interval).
+        Safe to call concurrently: all callers share one clock (see
         LLMRateLimiter), so N parallel orchestrators cannot exceed the
         configured rate in aggregate."""
         rate = (
             self.settings.local_rate_limit_seconds
-            if self.settings.llm_provider_mode == "local"
+            if self.active_provider_mode == "local"
             else self.settings.rate_limit_seconds
         )
         await self.rate_limiter.acquire(rate)
@@ -133,6 +176,153 @@ class LLMService:
             self.total_completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
         except (TypeError, ValueError):
             logger.debug("Malformed usage block in LLM response; skipped")
+
+    async def _check_provider_health(self, base_url: str, api_key: str) -> bool:
+        """Task 2: lightweight liveness ping - GET {base_url}/models, which
+        every OpenAI-compatible server exposes (Ollama's OpenAI-compatible
+        endpoint, LM Studio, vLLM, OpenRouter). ANY HTTP response counts as
+        'alive' (even 401/404: auth/routing problems will surface on the
+        real call and are counted by the failover budget anyway); only a
+        transport-level failure (connect error / timeout) means 'dead'."""
+        timeout = float(getattr(self.settings, "llm_health_check_timeout_seconds", 5.0))
+        if self._health_client is None:
+            self._health_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        url = base_url.rstrip("/") + "/models"
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            response = await self._health_client.get(url, headers=headers, timeout=timeout)
+            alive = response.status_code < 500
+            logger.debug(f"LLM health check {url} -> {response.status_code} (alive={alive})")
+            return alive
+        except Exception as e:
+            logger.debug(f"LLM health check failed for {url}: {e}")
+            return False
+
+    async def health_check(self) -> bool:
+        """Observability (/health): liveness of the ACTIVE provider (the
+        fallback after a failover), same 'any HTTP response = alive' rule
+        as the internal failover ping. Never raises."""
+        if self._fallback_active:
+            cfg = self.settings
+            base_url, api_key = str(cfg.llm_fallback_base_url), str(cfg.llm_fallback_api_key)
+        else:
+            base_url, api_key = str(self.settings.api_base_url), str(self.settings.api_key)
+        try:
+            return await self._check_provider_health(base_url, api_key)
+        except Exception:  # noqa: BLE001 - health checks never raise
+            return False
+
+    async def _consider_failover(self, reason: str) -> None:
+        """Decide whether to switch to the fallback provider after a
+        connection-level failure of the active one. Never raises: failover
+        is best-effort resilience, and any problem here must degrade to
+        'raise the original error', not mask it with a new one.
+
+        Guards, in order:
+        - fallback not configured -> no-op (byte-for-byte old behavior);
+        - already on fallback -> no-op (sticky; no ping-pong);
+        - attempt budget exhausted (LLM_FALLBACK_MAX_SWITCHES) -> no-op;
+        - inside the post-unhealthy-check cooldown -> no-op.
+        Each evaluation consumes one budget unit, so even a permanently
+        dead pair of providers terminates instead of looping."""
+        cfg = self.settings
+        mode = getattr(cfg, "llm_fallback_provider_mode", "") or ""
+        if not mode or self._fallback_active:
+            return
+        max_switches = int(getattr(cfg, "llm_fallback_max_switches", 3))
+        if self._failover_attempts_used >= max_switches:
+            logger.debug("LLM failover budget exhausted (%d attempts)", max_switches)
+            return
+        if time.monotonic() < self._failover_cooldown_until:
+            return
+        self._failover_attempts_used += 1
+
+        base_url = str(cfg.llm_fallback_base_url)
+        api_key = str(cfg.llm_fallback_api_key)
+        if not await self._check_provider_health(base_url, api_key):
+            self._failover_cooldown_until = time.monotonic() + _FAILOVER_COOLDOWN_SECONDS
+            logger.warning(
+                "Primary LLM provider unavailable (%s) but fallback health "
+                "check failed too - staying on the primary for now "
+                "(cooldown %.0fs, %d/%d failover attempts used)",
+                reason,
+                _FAILOVER_COOLDOWN_SECONDS,
+                self._failover_attempts_used,
+                max_switches,
+            )
+            return
+
+        if self._fallback_client is None:
+            self._fallback_http_client = (
+                httpx.AsyncClient(proxy=cfg.proxy_url, timeout=httpx.Timeout(cfg.http_timeout))
+                if cfg.proxy_url
+                else None
+            )
+            self._fallback_client = AsyncOpenAI(
+                api_key=api_key, base_url=base_url, http_client=self._fallback_http_client
+            )
+        self._fallback_active = True
+        logger.warning(
+            "Primary LLM provider unavailable (%s) - FAILED OVER to fallback: "
+            "mode=%s base=%s model=%s (pacing now follows the fallback's "
+            "rate-limit class)",
+            reason,
+            mode,
+            base_url,
+            cfg.llm_fallback_model,
+        )
+
+    async def _chat_completion(
+        self, messages: list[dict[str, Any]], temperature: float
+    ) -> Any:
+        """Single chat.completions.create against the ACTIVE provider
+        (primary, or fallback after failover) with the shared error
+        mapping. Both generate_action() and generate_text() route through
+        here so the mapping exists exactly once.
+
+        Failover trigger scope (deliberate): ONLY connection-level
+        failures (timeout / connect error / APIConnectionError). A 429 is
+        transient BY DESIGN - tenacity's backoff handles it, and switching
+        providers mid-run because of rate limiting would silently mask a
+        pacing misconfiguration rather than fix it."""
+        try:
+            model = (
+                self.settings.llm_fallback_model
+                if self._fallback_active
+                else self.settings.model_name
+            )
+            client = self._fallback_client if self._fallback_active else self.client
+            return await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=self.settings.max_tokens,
+            )
+        except httpx.TimeoutException as e:
+            _metrics.observe_llm_error("timeout")
+            await self._consider_failover(f"timeout: {e}")
+            raise NetworkError(f"Timeout connecting to LLM: {e}") from e
+        except httpx.ConnectError as e:
+            _metrics.observe_llm_error("connect")
+            await self._consider_failover(f"connection error: {e}")
+            raise NetworkError(f"Connection error contacting LLM: {e}") from e
+        except APIConnectionError as e:
+            _metrics.observe_llm_error("api_connection")
+            await self._consider_failover(f"API connection error: {e}")
+            raise NetworkError(f"API connection error: {e}") from e
+        except OpenAIRateLimitError as e:
+            # FIX: HTTP 429 - retryable with backoff, not a fatal LLMError.
+            # Deliberately NOT a failover trigger (see docstring).
+            _metrics.observe_llm_error("rate_limit")
+            raise NetworkError(f"Rate limited by LLM provider (429): {e}") from e
+        except NetworkError:
+            # FIX (1.2): a NetworkError surfacing from the call itself must
+            # reach tenacity as NetworkError - the generic handler below
+            # would re-wrap it into a non-retried LLMError.
+            raise
+        except Exception as e:
+            _metrics.observe_llm_error("api_error")
+            raise LLMError(f"LLM request failed: {e}", model_name=self.settings.model_name) from e
 
     async def close(self) -> None:
         """
@@ -153,6 +343,18 @@ class LLMService:
 
         if self._http_client:
             await self._http_client.aclose()
+
+        # Task 2 (failover): also release the lazily-created fallback and
+        # health-check clients.
+        if self._fallback_client is not None:
+            try:
+                await self._fallback_client.close()
+            except Exception as e:
+                logger.debug(f"Error closing fallback OpenAI client: {e}")
+        if self._fallback_http_client is not None:
+            await self._fallback_http_client.aclose()
+        if self._health_client is not None:
+            await self._health_client.aclose()
 
     async def __aenter__(self) -> "LLMService":
         """Context manager entry."""
@@ -187,32 +389,12 @@ class LLMService:
         # {"type": "text"/"image_url", ...} parts) for a single message
         # rather than a plain string. This method doesn't need to care -
         # it's forwarded to the API as-is - only the response is parsed.
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.settings.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=self.settings.max_tokens,
-            )
-
-        except httpx.TimeoutException as e:
-            raise NetworkError(f"Timeout connecting to LLM: {e}") from e
-        except httpx.ConnectError as e:
-            # FIX: wrap as NetworkError (retryable) instead of LLMError
-            raise NetworkError(f"Connection error contacting LLM: {e}") from e
-        except APIConnectionError as e:
-            # FIX: OpenAI SDK's own connection-error wrapper - also retryable
-            raise NetworkError(f"API connection error: {e}") from e
-        except OpenAIRateLimitError as e:
-            # FIX: HTTP 429 - retryable with backoff, not a fatal LLMError
-            raise NetworkError(f"Rate limited by LLM provider (429): {e}") from e
-        except NetworkError:
-            # FIX (1.2): a NetworkError surfacing from the call itself must
-            # reach tenacity as NetworkError - the generic handler below
-            # would re-wrap it into a non-retried LLMError.
-            raise
-        except Exception as e:
-            raise LLMError(f"LLM request failed: {e}", model_name=self.settings.model_name) from e
+        #
+        # Task 2 (failover): the call + error mapping + failover decision
+        # live in _chat_completion(); tenacity retries THIS method, so an
+        # attempt that fails on the primary is transparently retried on
+        # the fallback once _consider_failover() has switched.
+        response = await self._chat_completion(messages, temperature)
 
         self._connection_verified = True
         self._record_usage(response)
@@ -297,28 +479,9 @@ class LLMService:
             NetworkError: Transient/retryable connection issues.
             LLMError: Non-retryable failures (empty response, no choices).
         """
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.settings.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=self.settings.max_tokens,
-            )
-        except httpx.TimeoutException as e:
-            raise NetworkError(f"Timeout connecting to LLM: {e}") from e
-        except httpx.ConnectError as e:
-            raise NetworkError(f"Connection error contacting LLM: {e}") from e
-        except APIConnectionError as e:
-            raise NetworkError(f"API connection error: {e}") from e
-        except OpenAIRateLimitError as e:
-            raise NetworkError(f"Rate limited by LLM provider (429): {e}") from e
-        except NetworkError:
-            # FIX (1.2): a NetworkError surfacing from the call itself must
-            # reach tenacity as NetworkError - the generic handler below
-            # would re-wrap it into a non-retried LLMError.
-            raise
-        except Exception as e:
-            raise LLMError(f"LLM request failed: {e}", model_name=self.settings.model_name) from e
+        # Task 2 (failover): same shared call/mapping/failover path as
+        # generate_action() - see _chat_completion().
+        response = await self._chat_completion(messages, temperature)
 
         self._record_usage(response)
 
