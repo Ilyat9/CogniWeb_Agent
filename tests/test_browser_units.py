@@ -4,9 +4,10 @@ no real browser launches. Goal: cover the pure helpers and the action
 methods' decision logic rather than Playwright itself.
 """
 
+import socket
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,6 +23,21 @@ from src.infrastructure.browser import (
     _redact_sensitive_html,
 )
 from src.utils.dom import DOMProcessor
+
+
+def _mock_public_dns():
+    """Patch asyncio.get_running_loop so hostname resolution returns a public IP.
+
+    Hermetic on purpose: these tests must not depend on the machine's real
+    DNS. VPNs/proxies with fake-IP mode (e.g. 198.18.0.0/15) resolve public
+    hosts into benchmark ranges that ipaddress correctly reports as private,
+    so the SSRF guard would legitimately block navigation and break the test.
+    """
+    loop = MagicMock()
+    loop.getaddrinfo = AsyncMock(
+        return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    )
+    return patch("asyncio.get_running_loop", return_value=loop)
 
 
 def make_settings(tmp_path, **overrides):
@@ -95,10 +111,17 @@ class TestPureHelpers:
     async def test_host_policy_variants(self):
         # no restrictions configured, guard off -> never blocks
         assert await _check_navigation_host_policy("https://169.254.169.254/", None, False) is None
-        # unknown-host DNS failure is not a policy block (goto will report it)
-        assert (
-            await _check_navigation_host_policy("https://nonexistent.invalid/", None, True) is None
-        )
+        # unknown-host DNS failure is not a policy block (goto will report it).
+        # Hermetic: the resolver is mocked to fail - on this machine a VPN
+        # fake-IP resolver "resolves" even .invalid names into 198.18.0.0/15,
+        # which the guard would legitimately block.
+        loop = MagicMock()
+        loop.getaddrinfo = AsyncMock(side_effect=OSError("DNS failure"))
+        with patch("asyncio.get_running_loop", return_value=loop):
+            assert (
+                await _check_navigation_host_policy("https://nonexistent.invalid/", None, True)
+                is None
+            )
         # IP literal host
         assert "private" in await _check_navigation_host_policy("https://10.0.0.5/", None, True)
         # allowlisted host bypasses private guard
@@ -140,7 +163,8 @@ class TestBrowserServiceActions:
     @pytest.mark.asyncio
     async def test_navigate_adds_scheme_and_waits(self, tmp_path):
         service = self._service(tmp_path)
-        r = await service.navigate("example.com")
+        with _mock_public_dns():
+            r = await service.navigate("example.com")
         assert r.success is True
         url = service.page.goto.await_args.args[0]
         assert url == "https://example.com"
@@ -151,7 +175,8 @@ class TestBrowserServiceActions:
 
         service = self._service(tmp_path)
         service.page.goto = AsyncMock(side_effect=PlaywrightTimeoutError("t/o"))
-        r = await service.navigate("https://example.com")
+        with _mock_public_dns():
+            r = await service.navigate("https://example.com")
         assert r.success is False
         assert r.error == "NavigationTimeout"
         assert service.page.goto.await_count == 3

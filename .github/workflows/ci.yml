@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-lint-
             ${{ runner.os }}-pip-
@@ -77,7 +77,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
             ${{ runner.os }}-pip-
@@ -152,15 +152,18 @@ jobs:
         # FIX note: safety was replaced by pip-audit - safety 3.x requires
         # an interactive account login for `safety scan` and its legacy
         # `check` endpoint is dead, so it cannot gate a CI job. pip-audit
-        # (PyPA) resolves the four requirements files and FAILS on any
-        # known CVE in the resolved set - a real, unauthenticated gate.
+        # (PyPA) resolves the four requirements files AND the exact frozen
+        # deployable set (requirements.lock.txt) and FAILS on any known
+        # CVE in either - a real, unauthenticated gate. Auditing the lock
+        # matters because that is what production actually installs.
         run: |
           python -m pip install "pip-audit>=2.6,<3"
           pip-audit \
             -r requirements.txt \
             -r requirements-api.txt \
             -r requirements-ui.txt \
-            -r requirements-tools.txt
+            -r requirements-tools.txt \
+            -r requirements.lock.txt
 
       - name: Run bandit (code security issues)
         run: |
@@ -217,13 +220,49 @@ jobs:
           python -m pytest tests/test_e2e_real_browser.py -m e2e -v --tb=short --asyncio-mode=auto
 
   # ==========================================================================
+  # JOB 3c: Lock-file environment verification
+  # ==========================================================================
+  # requirements.lock.txt pins the EXACT environment the suite was validated
+  # against (see its header). The matrix job above deliberately installs
+  # bounded ranges across several Python versions; this job proves the
+  # frozen set itself still installs and passes the suite, so "deploy from
+  # the lock" stays a tested path rather than an assumption. Runs on the
+  # same Python major the lock was generated under.
+  lock-verify:
+    name: Verify Pinned Lock Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install exactly the locked environment
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.lock.txt
+
+      - name: Run test suite under the locked versions
+        env:
+          OPENAI_API_KEY: "sk-test-key-for-ci-not-real"
+          API_BASE_URL: "https://api.test.com/v1"
+          MODEL_NAME: "test-provider/test-model"
+          HEADLESS: "true"
+        run: |
+          python -m pytest tests/ -q --tb=short --maxfail=3 --asyncio-mode=auto
+
+  # ==========================================================================
   # JOB 4: Docker Build (only on main/develop)
   # ==========================================================================
   docker:
     name: Build Docker Image
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    needs: [lint, test, security]
+    needs: [lint, test, security, lock-verify]
     
     steps:
       - name: Checkout code
@@ -270,8 +309,19 @@ jobs:
         # The image's ENTRYPOINT is ["sh", "-c"], so the whole command must
         # arrive as ONE CMD string - a bare "--version" would be parsed by
         # sh itself ("Illegal option --", exit 2) and never reach main.py.
+        #
+        # FIX (Python version drift, audit item 19): the prod image's Python
+        # version is now ASSERTED, not assumed. The base tag
+        # mcr.microsoft.com/playwright/python:v1.40.0-jammy carries Ubuntu
+        # 22.04's Python 3.10 - the lower bound of the CI matrix and ruff's
+        # target-version. If the base tag is ever bumped to a different
+        # major Python, this check fails loudly instead of silently moving
+        # prod onto an untested interpreter.
         run: |
           docker run --rm cogniweb-agent:${{ github.sha }} "python main.py --version"
+          PYV=$(docker run --rm cogniweb-agent:${{ github.sha }} "python -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")'")
+          echo "Image Python version: $PYV"
+          [ "$PYV" = "3.10" ] || { echo "ERROR: expected Python 3.10 in prod image, got $PYV"; exit 1; }
 
   # ==========================================================================
   # JOB 5: Notify on Success/Failure
@@ -279,7 +329,7 @@ jobs:
   notify:
     name: Notify Results
     runs-on: ubuntu-latest
-    needs: [lint, test, security, docker]
+    needs: [lint, test, security, lock-verify, docker]
     if: always()
     
     steps:
@@ -300,6 +350,10 @@ jobs:
           fi
           if [[ "${{ needs.security.result }}" == "failure" ]]; then
             echo "Security scan failed!"
+            failed=1
+          fi
+          if [[ "${{ needs.lock-verify.result }}" == "failure" ]]; then
+            echo "Lock environment verification failed!"
             failed=1
           fi
           if [[ "${{ needs.docker.result }}" == "failure" ]]; then

@@ -9,10 +9,12 @@ All tests use mocks - no real API calls, no browser launches.
 
 import asyncio
 import json
+import socket
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -344,11 +346,19 @@ class TestNavigationPolicy:
 
     @pytest.mark.asyncio
     async def test_public_host_unaffected(self, tmp_path):
+        # Hermetic DNS: the machine's resolver may map public hosts into
+        # private/benchmark ranges (VPN fake-IP mode), which the SSRF guard
+        # would legitimately block. Pin resolution to a public IP.
+        loop = MagicMock()
+        loop.getaddrinfo = AsyncMock(
+            return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        )
         service = BrowserService(make_settings(tmp_path))
         page = AsyncMock()
         page.url = "https://example.com/"
         service.page = page
-        result = await service.navigate("https://example.com")
+        with patch("asyncio.get_running_loop", return_value=loop):
+            result = await service.navigate("https://example.com")
         assert result.success is True
 
     @pytest.mark.asyncio
@@ -646,3 +656,26 @@ class TestApiService:
         # FastAPI validates the body against TaskSubmission (min_length=1)
         client, _ = client_and_app
         assert client.post("/task", json={"task": ""}).status_code == 422
+
+    def test_pending_task_backpressure_429(self, client_and_app):
+        """Fix (unbounded queue growth): past MAX_PENDING_TASKS queued-or-
+        running tasks, submissions are rejected with 429 instead of being
+        buffered forever behind a single worker."""
+        from src.api.app import MAX_PENDING_TASKS
+
+        client, app = client_and_app
+        # Pre-seed pending records directly (no submission race with the
+        # worker): only the "state" field participates in the cap check.
+        # submitted_at is required because marking one finished below puts
+        # it in the pruner's scope.
+        for i in range(MAX_PENDING_TASKS):
+            app.state.tasks[f"seeded-{i}"] = {
+                "state": "queued",
+                "submitted_at": datetime.now().isoformat(),
+            }
+        resp = client.post("/task", json={"task": "one too many"})
+        assert resp.status_code == 429
+
+        # finished tasks do NOT count toward the pending cap
+        app.state.tasks["seeded-0"]["state"] = "finished"
+        assert client.post("/task", json={"task": "fits again"}).status_code == 202

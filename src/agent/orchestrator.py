@@ -213,6 +213,19 @@ class AgentOrchestrator:
         await self._wait_for_rate_limit()
         return await self.llm.generate_action(messages=messages, temperature=temperature)
 
+    async def _generate_text_with_rate_limit(
+        self, messages: list[dict[str, Any]], temperature: float = 0.7
+    ) -> str:
+        """Rate-limited call to LLMService.generate_text().
+
+        Single entry point for every plain-text LLM request in this class
+        (evaluator, context compaction). Previously each caller repeated
+        `await self._wait_for_rate_limit()` before its own generate_text()
+        - a new LLM call site could easily forget the pacing and hammer
+        the provider. Route new text calls through here."""
+        await self._wait_for_rate_limit()
+        return await self.llm.generate_text(messages=messages, temperature=temperature)
+
     def get_trimmed_history(self, window_size=None):
         """
         Get trimmed conversation history while preserving system prompt.
@@ -1208,8 +1221,7 @@ Always think step-by-step and explain your reasoning."""
             "is missing after the verdict."
         )
         try:
-            await self._wait_for_rate_limit()
-            response = await self.llm.generate_text(
+            response = await self._generate_text_with_rate_limit(
                 messages=[{"role": "user", "content": prompt}], temperature=0.0
             )
         except Exception as e:
@@ -1296,8 +1308,7 @@ Always think step-by-step and explain your reasoning."""
         summary_prompt = self._build_compaction_prompt(working_history)
 
         try:
-            await self._wait_for_rate_limit()
-            summary_text = await self.llm.generate_text(
+            summary_text = await self._generate_text_with_rate_limit(
                 messages=[
                     {
                         "role": "system",

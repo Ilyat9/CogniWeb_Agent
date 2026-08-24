@@ -593,3 +593,45 @@ class TestMarkdownExtraction:
         md = await extract_mod._crawl4ai_markdown("<h1>x</h1>", "")  # returns None -> fallback
         assert md is None
         assert extract_mod._CRAWL4AI_STATE["available"] is False
+
+    @pytest.mark.asyncio
+    async def test_html_to_markdown_is_strictly_offline(self, monkeypatch):
+        """SSRF guard (audit item 21): conversion must be pure text
+        manipulation. A page's <img>/<link>/<a>/base_url must never trigger
+        a fetch - otherwise an attacker-controlled page could make the
+        agent's process issue requests to internal addresses through the
+        converter (the same SSRF class navigate() guards against).
+
+        Prohibitive form: every network-capable primitive is replaced with
+        a tripwire that FAILS the test if touched. If a future dependency
+        change makes the converter (or the optional crawl4ai path) go
+        online, this test breaks loudly instead of silently opening an
+        SSRF hole."""
+        import socket
+
+        import src.utils.extract as extract_mod
+
+        def _tripwire(name):
+            def _fail(*args, **kwargs):
+                raise AssertionError(f"html_to_markdown attempted a network call via {name}")
+
+            return _fail
+
+        monkeypatch.setattr(socket.socket, "connect", _tripwire("socket.connect"))
+        monkeypatch.setattr(socket.socket, "connect_ex", _tripwire("socket.connect_ex"))
+        monkeypatch.setattr(socket, "getaddrinfo", _tripwire("socket.getaddrinfo"))
+        monkeypatch.setattr(socket, "create_connection", _tripwire("socket.create_connection"))
+
+        html = (
+            "<html><head>"
+            '<link rel="stylesheet" href="https://internal.example/steal.css">'
+            "</head><body>"
+            '<img src="http://169.254.169.254/latest/meta-data/">'
+            '<iframe src="http://10.0.0.1/admin"></iframe>'
+            '<a href="/relative">Rel</a>'
+            "<p>content</p>"
+            "</body></html>"
+        )
+        md = await extract_mod.html_to_markdown(html, base_url="https://example.com/page")
+        assert "content" in md
+        assert "[Rel](https://example.com/relative)" in md

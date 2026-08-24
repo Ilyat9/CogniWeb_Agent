@@ -186,6 +186,24 @@ async def _check_navigation_host_policy(
 
     DNS resolution failures do NOT block navigation here - the actual
     page.goto() will produce a clearer, actionable error for the LLM.
+
+    THREAT-MODEL NOTE (DNS rebinding / TOCTOU, audit item 14): this check
+    resolves DNS in Python BEFORE page.goto(); between that resolution and
+    Chromium's own connection the host's DNS answer may change (rebinding),
+    so a determined attacker can still land the connection on a private
+    IP. This guard therefore provides:
+      1. Redirect-chain protection - navigate() re-runs this policy on the
+         FINAL page.url after goto() (closes the "redirect to a never-
+         checked host" gap completely).
+      2. Best-effort pre-flight protection against direct private targets.
+    It does NOT pin the resolved IP to Chromium's connection. Full
+    rebinding defense requires network-level control (custom resolver /
+    proxy pinning) and is deliberately out of scope while the deployment
+    model is "operator-driven agent on trusted tasks". If this API ever
+    becomes multi-tenant (arbitrary users submitting arbitrary URLs), the
+    REQUIRED control is NAVIGATE_ALLOWED_DOMAINS (an allowlist makes the
+    TOCTOU window irrelevant: only allowlisted hosts are ever contacted)
+    or a network-level egress proxy - not more application-layer checks.
     """
     host = urlparse(url).hostname
     if not host:

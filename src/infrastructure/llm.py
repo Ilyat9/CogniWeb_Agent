@@ -1,3 +1,26 @@
+"""LLM service: OpenAI-compatible client with a two-tier retry strategy.
+
+RETRY OWNERSHIP (deliberate two-level split - keep new retry logic on the
+level that owns it, do not duplicate):
+
+1. TRANSPORT level (this module, tenacity @retry): retries TRANSIENT
+   infrastructure failures only - httpx timeouts/connect errors, OpenAI
+   APIConnectionError and HTTP 429 RateLimitError. These are wrapped into
+   NetworkError, which is the single exception type tenacity retries on.
+   Policy: stop_after_attempt(3), exponential backoff 2-10s.
+
+2. SEMANTIC level (orchestrator.run(), ad-hoc): retries "No valid JSON"
+   parse failures by trimming conversation history and re-asking. These are
+   LLMError (non-retryable here BY DESIGN): no amount of immediate
+   re-sending fixes a malformed/truncated completion - the input context
+   must change first, which only the orchestrator can do.
+
+Consequence for future edits: a NEW transport-ish failure belongs in the
+except-chain below (mapped to NetworkError); a NEW "model answered but
+unusable" failure belongs in the orchestrator's recovery path (LLMError).
+Never add a second tenacity layer or retry LLMError here.
+"""
+
 import asyncio
 import json
 import logging
@@ -149,6 +172,11 @@ class LLMService:
         # transient/retryable, but were being wrapped into the non-retried
         # LLMError below and silently never retried, contradicting
         # ARCHITECTURE.md's "tenacity handles network retries" claim.
+        #
+        # This decorator is the ONLY tenacity layer in the project (see the
+        # module docstring for the transport-vs-semantic retry ownership
+        # split). LLMError must stay non-retryable HERE - JSON-parse
+        # recovery is the orchestrator's job.
         retry=retry_if_exception_type((NetworkError, httpx.TimeoutException)),
     )
     async def generate_action(

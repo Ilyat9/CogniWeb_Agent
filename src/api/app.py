@@ -106,11 +106,22 @@ WS_TICKET_TTL_SECONDS = 60
 
 # Finished-task bookkeeping: every task record carries its full steps
 # buffer, so an unbounded dict is an unbounded memory leak in a
-# long-lived API process. On every submit, finished records older than
-# TASK_TTL_HOURS are dropped, then only the newest MAX_FINISHED_TASKS
-# finished records are kept. Running/queued tasks are never pruned.
+# long-lived API process. Finished records older than TASK_TTL_HOURS are
+# dropped, then only the newest MAX_FINISHED_TASKS finished records are
+# kept - pruned on every submit AND by a periodic background loop (a
+# quiet API that receives no submits would otherwise never prune).
 TASK_TTL_HOURS = 24
 MAX_FINISHED_TASKS = 200
+
+# Pending-task backpressure: the worker runs strictly one task at a time,
+# so without a cap a burst of submissions grows the queue (and its task
+# records) without limit while each task waits hours to even start.
+# Beyond MAX_PENDING_TASKS queued-or-running tasks new submissions are
+# rejected with 429 instead of being silently buffered forever.
+MAX_PENDING_TASKS = 50
+
+# How often the background pruner sweeps finished tasks (seconds).
+PRUNE_INTERVAL_SECONDS = 600
 
 
 def _mask_value(value: Any) -> Any:
@@ -296,23 +307,35 @@ def create_app(
                 )
                 app.state.queue.task_done()
 
+    async def _pruner() -> None:
+        """Periodically sweep finished task records so memory stays bounded
+        even when the API is idle (no submits -> no submit-time pruning)."""
+        while True:
+            await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
+            try:
+                _prune_finished_tasks()
+            except Exception:
+                logger.exception("Task pruning sweep failed")
+
     @app.on_event("startup")
     async def _start_worker() -> None:
         app.state.task_runner = task_runner
         if on_startup is not None:
             await on_startup()
         app.state.worker = asyncio.create_task(_worker())
+        app.state.pruner = asyncio.create_task(_pruner())
 
     @app.on_event("shutdown")
     async def _stop_worker() -> None:
         app.state.draining = True
-        worker = getattr(app.state, "worker", None)
-        if worker is not None:
-            worker.cancel()
-            try:
-                await worker
-            except asyncio.CancelledError:
-                pass
+        for name in ("worker", "pruner"):
+            bg = getattr(app.state, name, None)
+            if bg is not None:
+                bg.cancel()
+                try:
+                    await bg
+                except asyncio.CancelledError:
+                    pass
         if on_shutdown is not None:
             await on_shutdown()
 
@@ -326,6 +349,15 @@ def create_app(
     async def submit_task(submission: TaskSubmission) -> dict:
         if app.state.draining:
             raise HTTPException(status_code=503, detail="draining: no new tasks accepted")
+        # Backpressure (fix: unbounded queue growth): the single worker
+        # drains one task at a time; past MAX_PENDING_TASKS queued-or-
+        # running tasks, reject instead of buffering indefinitely.
+        pending = sum(1 for r in app.state.tasks.values() if r["state"] in ("queued", "running"))
+        if pending >= MAX_PENDING_TASKS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"too many pending tasks ({pending}); retry later",
+            )
         task_id = uuid.uuid4().hex
         record: dict[str, Any] = {
             "task_id": task_id,
