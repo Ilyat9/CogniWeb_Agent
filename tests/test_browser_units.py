@@ -192,7 +192,13 @@ class TestBrowserServiceActions:
     async def test_navigate_blocked_after_redirect(self, tmp_path):
         service = self._service(tmp_path)
         service.page.url = "javascript:evil()"
-        r = await service.navigate("https://redirector.example")
+        # Hermetic DNS (see _mock_public_dns): without this, a VPN fake-IP
+        # resolver answers for 'redirector.example' with 198.18.0.0/15 and
+        # the pre-flight SSRF guard blocks navigation (BlockedByPolicy)
+        # BEFORE goto() - masking the post-redirect protocol check that
+        # this test actually verifies.
+        with _mock_public_dns():
+            r = await service.navigate("https://redirector.example")
         assert r.error == "BlockedProtocol"
 
     @pytest.mark.asyncio
