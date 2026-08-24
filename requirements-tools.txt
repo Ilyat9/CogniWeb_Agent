@@ -8,10 +8,10 @@
 # Task 4 (stealth mode): fuller anti-fingerprinting patch set on top of the
 # built-in init scripts. Without it: one warning per run, built-in patches
 # still apply (see src/infrastructure/browser.py::_stealth_async).
-playwright-stealth>=1.0.6
+playwright-stealth>=1.0.6,<3.0.0
 
 # Task 3 (Crawl4AI approach): higher-quality HTML->Markdown conversion for
 # extract_page_content. Without it: the built-in heuristic cleaner is used
 # (see src/utils/extract.py). NOTE: crawl4ai is only used as an HTML
 # converter here - it never launches its own browser runtime.
-crawl4ai>=0.4.0
+crawl4ai>=0.4.0,<1.0.0

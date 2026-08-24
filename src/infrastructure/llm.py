@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -17,6 +19,44 @@ from ..core.exceptions import LLMError, NetworkError
 from ..core.models import AgentAction
 
 logger = logging.getLogger(__name__)
+
+
+class LLMRateLimiter:
+    """
+    Shared request pacer: one clock + one lock per LLM client.
+
+    Fix (rate limit not coordinated between parallel agents): pacing used
+    to live per-orchestrator (an instance attribute `last_call_time` plus
+    a per-instance asyncio.Lock), so N orchestrators started via
+    run_parallel_agents() each kept their OWN clock - together they hit
+    the provider N times as often as RATE_LIMIT_SECONDS allows, with only
+    a docstring comment asking the operator to raise the interval
+    manually. Living on LLMService (which every orchestrator of a run
+    shares), the clock is shared: concurrent callers queue on the lock
+    and each respects the full interval between actual API calls.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._last_call_time = 0.0
+
+    async def acquire(self, rate_limit_seconds: float) -> None:
+        """Wait until `rate_limit_seconds` has passed since the previous
+        acquire(); stamps the slot BEFORE the actual request runs, so a
+        caller that acquires next sees a fresh timestamp even while this
+        request is still in flight."""
+        if rate_limit_seconds <= 0:
+            return
+        # Hold the lock across read -> sleep -> write so two concurrent
+        # callers cannot both observe the same stale timestamp and both
+        # skip the pause.
+        async with self._lock:
+            time_since_last = time.time() - self._last_call_time
+            if time_since_last < rate_limit_seconds:
+                delay = rate_limit_seconds - time_since_last
+                print(f"⏳ Rate limiting: waiting {delay:.1f}s before next LLM request...")
+                await asyncio.sleep(delay)
+            self._last_call_time = time.time()
 
 
 class LLMService:
@@ -42,6 +82,22 @@ class LLMService:
         # in-process view of a run's actual token cost.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+
+        # Shared pacing clock for every caller of this service (all
+        # orchestrators of a run, including run_parallel_agents).
+        self.rate_limiter = LLMRateLimiter()
+
+    async def wait_for_rate_limit(self) -> None:
+        """Pace requests per the configured interval for the active provider
+        mode. Safe to call concurrently: all callers share one clock (see
+        LLMRateLimiter), so N parallel orchestrators cannot exceed the
+        configured rate in aggregate."""
+        rate = (
+            self.settings.local_rate_limit_seconds
+            if self.settings.llm_provider_mode == "local"
+            else self.settings.rate_limit_seconds
+        )
+        await self.rate_limiter.acquire(rate)
 
     def _record_usage(self, response: Any) -> None:
         """Accumulate usage stats if the provider returned them (mock/local

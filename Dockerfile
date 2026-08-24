@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1.4
 
 # ==============================================================================
-# Базовый образ Playwright с предустановленными системными зависимостями
+# Базовый образ Playwright с предустановленными системными зависимостями.
+# Python-версия: этот тег построен на Ubuntu 22.04 (jammy) и несёт
+# системный Python 3.10 - нижнюю границу CI-матрицы (3.10/3.11/3.12).
+# НЕ переходите на базовый тег с другой мажорной версией Python, не
+# расширив CI-матрицу соответствующим образом.
 # ==============================================================================
 FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
@@ -64,6 +68,7 @@ ENV PYTHONUNBUFFERED=1 \
     DEBUG_MODE=false \
     USER_DATA_DIR=/app/browser_data \
     SCREENSHOT_DIR=/app/screenshots \
+    HEARTBEAT_FILE=/app/logs/heartbeat \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # MODE (cli по умолчанию / api) пробрасывается в ENV, чтобы точка входа
@@ -86,6 +91,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s \
 # при публикации портов контейнера (-p 8000:8000); localhost-биндинг
 # внутри контейнера был бы недостижим с хоста. Локальный запуск БЕЗ Docker
 # использует безопасный дефолт API_BIND_HOST=127.0.0.1 (см. make run-ui).
-# При публикации порта наружу обязательно задайте API_AUTH_TOKEN.
+# При публикации порта наружу ОБЯЗАТЕЛЬНО задайте API_AUTH_TOKEN (>=16
+# символов): src/api/app.py refuses to start на 0.0.0.0 без токена.
+# Осознанный отказ от токена (только для изолированной доверенной сети) -
+# ALLOW_UNAUTHENTICATED_PUBLIC_BIND=true.
 ENTRYPOINT ["sh", "-c"]
 CMD ["if [ \"$MODE\" = \"api\" ]; then exec python -m uvicorn src.api.app:build_default_app --factory --host 0.0.0.0 --port 8000; else exec python main.py; fi"]

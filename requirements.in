@@ -3,22 +3,29 @@
 # ============================================================================
 # requirements.txt is generated from this file via `make update-deps`
 # (pip-compile --generate-hashes requirements.in -o requirements.txt).
+#
+# VERSION POLICY: every dependency carries an UPPER BOUND (< next.major)
+# so a clean install can never silently pull an untested major release
+# (e.g. openai jumped 1.x -> 3.x with renamed exception classes while this
+# code was written against 1.x semantics). The exact tested set is frozen
+# in requirements.lock.txt; raise a bound only after running the test
+# suite against the new major.
 # ============================================================================
 
 # Core Dependencies
-python-dotenv>=1.0.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
+python-dotenv>=1.0.0,<2.0.0
+pydantic>=2.0.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
 
 # LLM API
-openai>=1.0.0
-httpx>=0.25.0
+openai>=1.0.0,<4.0.0
+httpx>=0.25.0,<1.0.0
 
 # Browser Automation
-playwright>=1.40.0
+playwright>=1.40.0,<2.0.0
 
 # Retry Logic
-tenacity>=8.2.0
+tenacity>=8.2.0,<10.0.0
 
 # ============================================================================
 # Post-Installation

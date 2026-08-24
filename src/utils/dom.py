@@ -86,6 +86,19 @@ class DOMProcessor:
         try:
             elements = await page.evaluate(
                 "(maxTextLength) => {\n"
+                "                    // Clear stale data-agent-id attributes from\n"
+                "                    // previous observations BEFORE assigning fresh\n"
+                "                    // ones. IDs restart at 0 every call, so any\n"
+                "                    // element that drops out of the current\n"
+                "                    // (visible) selection would otherwise keep a\n"
+                "                    // stale id forever - and a later\n"
+                '                    // [data-agent-id="N"] selector could match a\n'
+                "                    // stale hidden element instead of (or in\n"
+                "                    // addition to) the fresh one, breaking strict\n"
+                "                    // mode or clicking the wrong node.\n"
+                "                    document.querySelectorAll('[data-agent-id]')\n"
+                "                        .forEach(el => el.removeAttribute('data-agent-id'));\n"
+                "                    \n"
                 '                    // FIXED: Include role="link" for modern SPAs\n'
                 "                    const selectors = [\n"
                 "                        'button',\n"

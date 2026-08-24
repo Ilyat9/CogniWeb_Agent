@@ -540,6 +540,18 @@ class Settings(BaseSettings):
         description="Maximum ms delay between keystrokes",
     )
 
+    typing_slow_path_max_chars: int = Field(
+        default=200,
+        ge=1,
+        alias="TYPING_SLOW_PATH_MAX_CHARS",
+        description="Texts longer than this many characters are entered with a "
+        "single instant fill() instead of the per-keystroke human-like loop "
+        "(which at the default 50-150ms/char would take minutes for long "
+        "texts and always exceed ACTION_TIMEOUT). Anti-fingerprinting "
+        "timing matters for short human-like inputs, not for pasting long "
+        "content.",
+    )
+
     # ===== Context Compaction (Task 3) =====
     # FIX (Task 3): get_trimmed_history() (conversation_window_size /
     # json_retry_window_size above) is deliberately dumb, cheap hard
@@ -574,6 +586,24 @@ class Settings(BaseSettings):
         "history exceeds this. Uses the same cheap chars/4 heuristic the "
         "project already relies on elsewhere (see SELF_REVIEW.md's 'why NOT "
         "tiktoken' rationale) rather than a real tokenizer.",
+    )
+
+    # Hard in-memory bound on conversation_history, applied INDEPENDENTLY
+    # of compaction: with enable_context_compaction=False (valid, but
+    # non-default) the old code's only protection was get_trimmed_history()
+    # - which trims what is SENT to the LLM, not what accumulates in the
+    # process. A max_steps=200 run would grow conversation_history without
+    # limit. When the cap is hit the oldest messages (after the system
+    # prompt) are dropped without any LLM summarization.
+    history_hard_cap_messages: int = Field(
+        default=200,
+        ge=10,
+        le=1000,
+        alias="HISTORY_HARD_CAP_MESSAGES",
+        description="Absolute maximum number of messages kept in "
+        "conversation_history in memory. Excess oldest messages (system "
+        "prompt excluded) are dropped - even when ENABLE_CONTEXT_COMPACTION"
+        "=false, so a long run cannot grow process memory without bound.",
     )
 
     # ===== Vision / Visual Fallback (Task 4 + Browser-Use ideas) =====
@@ -789,6 +819,20 @@ class Settings(BaseSettings):
         min_length=16,
     )
 
+    # Fix (0.0.0.0 bind without mandatory auth): the API refuses to start
+    # when it would bind to all interfaces with API_AUTH_TOKEN unset (see
+    # src/api/app.py::_enforce_public_bind_auth_policy). This flag is the
+    # operator's explicit acknowledgement of that risk - e.g. an isolated
+    # trusted network or an authenticating reverse proxy in front.
+    allow_unauthenticated_public_bind: bool = Field(
+        default=False,
+        alias="ALLOW_UNAUTHENTICATED_PUBLIC_BIND",
+        description="Explicitly allow binding to all interfaces WITHOUT "
+        "API_AUTH_TOKEN. DANGEROUS: anyone who can reach the port controls "
+        "the agent's browser, including its persistent cookies. The API "
+        "otherwise refuses to start in that configuration.",
+    )
+
     # ===== Debugging =====
     debug_mode: bool = Field(
         default=False,
@@ -811,6 +855,29 @@ class Settings(BaseSettings):
         default=Path("./checkpoints"),
         alias="CHECKPOINT_DIR",
         description="Directory for captcha human-in-the-loop checkpoints",
+    )
+
+    # Liveness heartbeat for docker-healthcheck.py in CLI (batch) mode.
+    # The orchestrator touches this file once per reasoning step; the
+    # healthcheck flags the container unhealthy when the file exists but
+    # has not been updated for HEARTBEAT_STALE_SECONDS - catching a hung
+    # browser/step loop that a "process alive" check can never see.
+    # (API mode probes the real /health endpoint instead.)
+    heartbeat_file: Path = Field(
+        default=Path("./logs/heartbeat"),
+        alias="HEARTBEAT_FILE",
+        description="File touched once per agent step; docker-healthcheck.py "
+        "uses its mtime as the CLI-mode liveness signal.",
+    )
+
+    heartbeat_stale_seconds: float = Field(
+        default=600.0,
+        ge=30.0,
+        alias="HEARTBEAT_STALE_SECONDS",
+        description="A CLI-mode heartbeat older than this many seconds "
+        "makes docker-healthcheck.py report the container unhealthy. Sized "
+        "to comfortably exceed one full step (rate-limit pause + LLM HTTP "
+        "timeout + browser action).",
     )
 
     @model_validator(mode="after")

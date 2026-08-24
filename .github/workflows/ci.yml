@@ -123,34 +123,50 @@ jobs:
   # ==========================================================================
   # JOB 3: Security Scan
   # ==========================================================================
+  # FIX (decorative security gate): both scan steps used to end in
+  # `|| true`, so this job was green no matter what they found - the only
+  # barrier between a vulnerable dependency / insecure code and the docker
+  # job (which `needs: security`) did not actually block anything. The
+  # `|| true` are gone; bandit additionally runs with the SAME config the
+  # developers use locally (`-c .bandit`) instead of a different, wider
+  # rule set, so "clean locally" and "clean in CI" mean the same thing.
   security:
     name: Security Vulnerability Scan
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      
-      - name: Run safety check (dependency vulnerabilities)
+
+      - name: Run dependency vulnerability audit (pip-audit)
+        # FIX note: safety was replaced by pip-audit - safety 3.x requires
+        # an interactive account login for `safety scan` and its legacy
+        # `check` endpoint is dead, so it cannot gate a CI job. pip-audit
+        # (PyPA) resolves the four requirements files and FAILS on any
+        # known CVE in the resolved set - a real, unauthenticated gate.
         run: |
-          python -m pip install safety
-          safety check --json || true
-      
+          python -m pip install "pip-audit>=2.6,<3"
+          pip-audit \
+            -r requirements.txt \
+            -r requirements-api.txt \
+            -r requirements-ui.txt \
+            -r requirements-tools.txt
+
       - name: Run bandit (code security issues)
         run: |
           python -m pip install bandit
-          bandit -r src/ -f json -o bandit-report.json || true
-      
+          bandit -r src/ -c .bandit -f json -o bandit-report.json
+
       - name: Upload security reports
         uses: actions/upload-artifact@v4
         if: always()
@@ -158,6 +174,47 @@ jobs:
           name: security-reports
           path: |
             bandit-report.json
+
+  # ==========================================================================
+  # JOB 3b: E2E real-browser smoke
+  # ==========================================================================
+  # The unit suite is AsyncMock-based (83% coverage covers decision logic,
+  # not the real DOM/Chromium interaction). This job runs the one true
+  # end-to-end smoke: real Playwright Chromium against an in-process
+  # localhost page (fully self-contained, no internet). Deliberately
+  # continue-on-error for now so a flaky browser job cannot block the
+  # pipeline while the suite is young - flip to false once it has proven
+  # stable.
+  e2e:
+    name: E2E Real Browser Smoke
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run e2e smoke test
+        env:
+          OPENAI_API_KEY: "sk-test-key-for-ci-not-real"
+          API_BASE_URL: "https://api.test.com/v1"
+          MODEL_NAME: "test-provider/test-model"
+          HEADLESS: "true"
+        run: |
+          python -m pytest tests/test_e2e_real_browser.py -m e2e -v --tb=short --asyncio-mode=auto
 
   # ==========================================================================
   # JOB 4: Docker Build (only on main/develop)

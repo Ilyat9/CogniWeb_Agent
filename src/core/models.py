@@ -23,6 +23,32 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 # ===== Agent Actions =====
 
 
+def _coerce_numeric(value: Any, field_desc: str) -> int | float:
+    """Coerce a JSON number-as-string ("5", "1.5") to int/float for the
+    numeric arg fields LLMs commonly emit inconsistently. Raises
+    ValueError for anything that is not coercible, with `field_desc` in
+    the message.
+
+    Consistency contract: the orchestrator normalizes the same fields
+    (see AgentOrchestrator._normalize_action_args) before dispatching -
+    the schema must not REJECT values that the handler layer is designed
+    to accept post-coercion ("5"), while still rejecting genuine garbage
+    ("abc", [1])."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{field_desc} must be numeric")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            number = None
+        if number is None:
+            raise ValueError(f"{field_desc} must be numeric, got {value!r}")
+        return int(number) if number.is_integer() else number
+    raise ValueError(f"{field_desc} must be numeric, got {type(value).__name__}")
+
+
 class AgentAction(BaseModel):
     """
     Represents a single action the agent wants to take.
@@ -197,8 +223,8 @@ class AgentAction(BaseModel):
                 raise ValueError(
                     "wait_for_element state must be one of " "attached/visible/hidden/detached"
                 )
-            if "timeout_ms" in v and not isinstance(v["timeout_ms"], (int, float)):
-                raise ValueError("wait_for_element 'timeout_ms' must be numeric")
+            if "timeout_ms" in v:
+                v["timeout_ms"] = _coerce_numeric(v["timeout_ms"], "wait_for_element 'timeout_ms'")
 
         elif tool == "hover_element":
             if "element_id" not in v:
@@ -215,14 +241,18 @@ class AgentAction(BaseModel):
                 raise ValueError("extract_structured_data requires a non-empty string 'key'")
 
         elif tool == "switch_tab":
-            if "index" not in v or not isinstance(v["index"], int) or isinstance(v["index"], bool):
-                raise ValueError("switch_tab requires an integer 'index'")
+            if "index" not in v:
+                raise ValueError("switch_tab requires 'index' in args")
+            index = _coerce_numeric(v["index"], "switch_tab 'index'")
+            if not isinstance(index, int):
+                raise ValueError("switch_tab 'index' must be a whole number")
+            v["index"] = index
 
         elif tool == "download_file":
             if "element_id" not in v:
                 raise ValueError("download_file requires 'element_id' in args")
-            if "timeout_ms" in v and not isinstance(v["timeout_ms"], (int, float)):
-                raise ValueError("download_file 'timeout_ms' must be numeric")
+            if "timeout_ms" in v:
+                v["timeout_ms"] = _coerce_numeric(v["timeout_ms"], "download_file 'timeout_ms'")
 
         elif tool == "find_element_by_text":
             if "text" not in v or not isinstance(v["text"], str) or not v["text"].strip():

@@ -43,6 +43,7 @@ import inspect
 import json
 import logging
 import re
+import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -55,11 +56,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 
+from ..core.exceptions import ConfigurationError
 from ..core.models import ActionResult, AgentAction, TaskResult
 
 logger = logging.getLogger(__name__)
 
 TaskRunner = Callable[..., Awaitable[TaskResult]]
+LifecycleHook = Callable[[], Awaitable[None]]
 # A task runner may optionally accept extra keyword arguments injected by
 # the worker (both are always passed by keyword, so 2-positional-arg
 # runners - like every existing test fixture - keep working):
@@ -101,6 +104,14 @@ _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # history and Referer headers.
 WS_TICKET_TTL_SECONDS = 60
 
+# Finished-task bookkeeping: every task record carries its full steps
+# buffer, so an unbounded dict is an unbounded memory leak in a
+# long-lived API process. On every submit, finished records older than
+# TASK_TTL_HOURS are dropped, then only the newest MAX_FINISHED_TASKS
+# finished records are kept. Running/queued tasks are never pruned.
+TASK_TTL_HOURS = 24
+MAX_FINISHED_TASKS = 200
+
 
 def _mask_value(value: Any) -> Any:
     if isinstance(value, str) and value:
@@ -125,6 +136,8 @@ def mask_settings(settings_dict: dict[str, Any]) -> dict[str, Any]:
 def create_app(
     task_runner: TaskRunner,
     settings: Any | None = None,
+    on_startup: LifecycleHook | None = None,
+    on_shutdown: LifecycleHook | None = None,
 ) -> FastAPI:
     """Build the API app with an injected task runner (async callable
     (task, starting_url) -> TaskResult; may additionally accept keyword
@@ -132,7 +145,13 @@ def create_app(
     Injection keeps this module testable without launching a browser or an
     LLM client. `settings` is optional: when given, GET /config reflects it
     and API_AUTH_TOKEN (if set) enables bearer auth; otherwise settings
-    are lazily loaded on first request."""
+    are lazily loaded on first request.
+
+    on_startup / on_shutdown (optional): async no-arg hooks run inside the
+    app's startup/shutdown events. They let production wiring (see
+    build_default_app) own heavy shared resources - the browser and the
+    LLM client - for the app's WHOLE lifetime instead of per task, while
+    injected-runner tests keep constructing nothing."""
 
     app = FastAPI(title="CogniWeb Agent API", version="1.1")
     # Internal records: plain dicts (not TaskStatus) so we can carry the
@@ -193,6 +212,39 @@ def create_app(
         for queue in list(record["subscribers"]):
             queue.put_nowait(event)
 
+    def _prune_finished_tasks() -> None:
+        """Bound app.state.tasks memory (fix: unbounded task store). Drop
+        finished records older than TASK_TTL_HOURS, then keep only the
+        newest MAX_FINISHED_TASKS finished records - each record carries
+        its full steps buffer, so without pruning a long-lived API process
+        grows without limit. Called on every submit; running/queued tasks
+        are never touched."""
+        finished = sorted(
+            (
+                (record["submitted_at"], task_id)
+                for task_id, record in app.state.tasks.items()
+                if record["state"] == "finished"
+            ),
+        )
+        now = datetime.now()
+        for submitted_at, task_id in finished:
+            try:
+                age_seconds = (now - datetime.fromisoformat(submitted_at)).total_seconds()
+            except ValueError:
+                age_seconds = float("inf")
+            if age_seconds > TASK_TTL_HOURS * 3600:
+                del app.state.tasks[task_id]
+
+        remaining = sorted(
+            (record["submitted_at"], task_id)
+            for task_id, record in app.state.tasks.items()
+            if record["state"] == "finished"
+        )
+        excess = len(remaining) - MAX_FINISHED_TASKS
+        if excess > 0:
+            for _, task_id in remaining[:excess]:
+                del app.state.tasks[task_id]
+
     async def _worker() -> None:
         while True:
             task_id = await app.state.queue.get()
@@ -247,6 +299,8 @@ def create_app(
     @app.on_event("startup")
     async def _start_worker() -> None:
         app.state.task_runner = task_runner
+        if on_startup is not None:
+            await on_startup()
         app.state.worker = asyncio.create_task(_worker())
 
     @app.on_event("shutdown")
@@ -259,6 +313,8 @@ def create_app(
                 await worker
             except asyncio.CancelledError:
                 pass
+        if on_shutdown is not None:
+            await on_shutdown()
 
     @app.get("/health")
     async def health() -> dict:
@@ -297,6 +353,7 @@ def create_app(
 
         record["on_step"] = _on_step
         app.state.tasks[task_id] = record
+        _prune_finished_tasks()
         await app.state.queue.put(task_id)
         return {"task_id": task_id}
 
@@ -523,11 +580,70 @@ def _reports_dir(app: FastAPI) -> Path:
     return Path("./reports")
 
 
+def _detect_public_bind(settings: Any) -> bool:
+    """True when the API will listen on a non-loopback 'all interfaces'
+    address - either via Settings (API_BIND_HOST) or via an explicit
+    `--host` on the uvicorn command line (as the Dockerfile CMD does,
+    which bypasses Settings entirely)."""
+    # NOTE: the "0.0.0.0"/"::" literals below are DETECTION values, not a
+    # bind call - this guard is what REFUSES to start on them (see
+    # _enforce_public_bind_auth_policy). Hence the targeted nosec B104.
+    host = str(getattr(settings, "api_bind_host", "127.0.0.1") or "").strip()
+    if host in ("0.0.0.0", "::", ""):  # nosec B104
+        return True
+    argv = sys.argv
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--host" and str(argv[i + 1]).strip() in ("0.0.0.0", "::", ""):  # nosec B104
+            return True
+    return False
+
+
+def _enforce_public_bind_auth_policy(settings: Any) -> None:
+    """Fix (0.0.0.0 bind without mandatory auth): the API drives a real
+    browser holding persistent cookies, and API_AUTH_TOKEN defaults to
+    None (auth off). Anyone running the container with `-p 8000:8000` and
+    no token would publish a fully open endpoint controlling that browser.
+    Refuse to start in that state unless the operator explicitly sets
+    ALLOW_UNAUTHENTICATED_PUBLIC_BIND=true (e.g. an isolated trusted
+    network / an auth-ing reverse proxy in front)."""
+    if not _detect_public_bind(settings):
+        return
+    if getattr(settings, "api_auth_token", None):
+        return
+    if getattr(settings, "allow_unauthenticated_public_bind", False):
+        logger.critical(
+            "API binds to all interfaces WITHOUT authentication "
+            "(ALLOW_UNAUTHENTICATED_PUBLIC_BIND=true). Anyone who can reach "
+            "this port controls the agent's browser, including its stored "
+            "cookies. Use only on a trusted/isolated network."
+        )
+        return
+    raise ConfigurationError(
+        "Refusing to start: the API would bind to all interfaces "
+        "(0.0.0.0/::) without API_AUTH_TOKEN. This publishes an open "
+        "endpoint that drives a real browser with persistent cookies. "
+        "Either set API_AUTH_TOKEN (>= 16 chars), or bind to a loopback "
+        "address, or explicitly acknowledge the risk with "
+        "ALLOW_UNAUTHENTICATED_PUBLIC_BIND=true."
+    )
+
+
 def build_default_app() -> FastAPI:
     """Production wiring: real Settings/BrowserService/LLMService with a
     graceful-shutdown flag the API sets on SIGTERM. The orchestrator also
     receives the per-task emit/stop channels so the UI endpoints and
-    WebSocket have live data."""
+    WebSocket have live data.
+
+    Fix (browser relaunch per task): browser + LLM client are started
+    ONCE (app startup) and closed at app shutdown. Each task runs on its
+    OWN Page (browser.new_page()) in the shared context and closes only
+    that page when it finishes. Previously every task executed
+    `async with browser, llm:` - a full Chromium launch + teardown per
+    queued task, which added seconds of latency per task and risked
+    persistent-profile lock errors under queue pressure (Playwright
+    refuses a second launch_persistent_context on the same user_data_dir
+    while the previous Chromium is still shutting down).
+    """
     import signal
 
     from ..agent import AgentOrchestrator
@@ -535,6 +651,8 @@ def build_default_app() -> FastAPI:
     from ..infrastructure import BrowserService, LLMService
 
     settings = load_settings()
+    _enforce_public_bind_auth_policy(settings)
+
     browser = BrowserService(settings)
     llm = LLMService(settings)
     shutdown_requested = {"flag": False}
@@ -545,6 +663,27 @@ def build_default_app() -> FastAPI:
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
 
+    browser_lock = asyncio.Lock()
+
+    async def _ensure_browser() -> BrowserService:
+        """The shared browser for the app lifetime; (re)started lazily
+        under a lock if it is not up yet (first task, or recovery after a
+        mid-life crash closed it)."""
+        if browser.context is None:
+            async with browser_lock:
+                if browser.context is None:
+                    await browser.start()
+        return browser
+
+    async def _on_startup() -> None:
+        await _ensure_browser()
+
+    async def _on_shutdown() -> None:
+        # asyncio.shield for the same reason as BrowserService.__aexit__:
+        # cleanup must complete even when shutdown races cancellation.
+        await asyncio.shield(browser.close())
+        await llm.close()
+
     async def _run_task(
         task: str,
         starting_url: str | None,
@@ -552,10 +691,14 @@ def build_default_app() -> FastAPI:
         stop_check: Callable[[], bool] | None = None,
         on_step: Callable[[int, Any, Any], None] | None = None,
     ) -> TaskResult:
-        async with browser, llm:
+        # Per-task isolated page in the shared long-lived context; the
+        # orchestrator gets a lightweight per-page BrowserService view
+        # (own element_map), so tasks cannot leak selectors into each other.
+        page_view = await (await _ensure_browser()).new_page()
+        try:
             orchestrator = AgentOrchestrator(
                 settings,
-                browser,
+                page_view,
                 llm,
                 shutdown_check=lambda: shutdown_requested["flag"]
                 or bool(stop_check and stop_check()),
@@ -563,5 +706,14 @@ def build_default_app() -> FastAPI:
                 on_step=on_step,
             )
             return await orchestrator.run(task, starting_url=starting_url)
+        finally:
+            # Close ONLY this task's page - the shared browser/context
+            # stays up for the next queued task.
+            try:
+                await page_view.page.close()
+            except Exception as e:
+                logger.debug(f"Per-task page close failed (non-fatal): {e}")
 
-    return create_app(_run_task, settings=settings)
+    return create_app(
+        _run_task, settings=settings, on_startup=_on_startup, on_shutdown=_on_shutdown
+    )

@@ -304,9 +304,18 @@ class AgentCriticalError(AgentBaseException):
         super().__init__(message, context=context, **kwargs)
 
 
-class TimeoutError(AgentBaseException):
+class AgentTimeoutError(AgentBaseException):
     """
     Operation exceeded timeout.
+
+    FIX (shadowing builtins.TimeoutError): this class used to be named
+    plain `TimeoutError`, silently shadowing the built-in exception on
+    any `from ..core.exceptions import TimeoutError`. main.py relies on
+    catching the BUILT-IN TimeoutError around asyncio.wait_for() - one
+    stray star-import or copy-paste would have made that handler
+    silently stop working. It was never raised or caught anywhere in
+    the codebase, so the rename is safe; the name now makes the
+    shadowing impossible.
 
     Examples:
     - Page load timeout

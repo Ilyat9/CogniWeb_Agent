@@ -176,6 +176,17 @@ class AgentOrchestrator:
             else self.settings.rate_limit_seconds
         )
 
+        # Fix (rate limit not coordinated between parallel agents): with a
+        # real LLMService, the pacing clock lives on the SERVICE and is
+        # shared by every orchestrator using it (including all of
+        # run_parallel_agents()), so N parallel agents can no longer
+        # exceed the configured rate in aggregate. The local clock below
+        # is a fallback for test doubles / foreign objects that do not
+        # carry the shared limiter.
+        if isinstance(self.llm, LLMService):
+            await self.llm.wait_for_rate_limit()
+            return
+
         # Hold the lock across read -> sleep -> write so two concurrent
         # callers cannot both observe the same stale last_call_time and
         # both skip the pause (see __init__ comment).
@@ -213,6 +224,23 @@ class AgentOrchestrator:
         if len(self.conversation_history) <= window_size + 1:
             return self.conversation_history
         return [self.conversation_history[0]] + self.conversation_history[-window_size:]
+
+    def _hard_cap_history(self) -> None:
+        """Bound conversation_history IN MEMORY (fix: unbounded growth with
+        compaction disabled). get_trimmed_history() only bounds what is
+        sent to the LLM; this bounds what the process keeps. Oldest
+        messages after the system prompt are dropped without summarization
+        when HISTORY_HARD_CAP_MESSAGES is exceeded."""
+        cap = getattr(self.settings, "history_hard_cap_messages", 200)
+        if len(self.conversation_history) > cap:
+            dropped = len(self.conversation_history) - cap
+            self.conversation_history = [self.conversation_history[0]] + self.conversation_history[
+                -(cap - 1) :
+            ]
+            logger.info(
+                f"History hard cap applied: dropped {dropped} oldest messages "
+                f"(kept system prompt + last {cap - 1})"
+            )
 
     async def run(self, task: str, starting_url: str | None = None) -> TaskResult:
         """
@@ -359,6 +387,11 @@ class AgentOrchestrator:
 
         # Main reasoning loop
         for step in range(1, self.settings.max_steps + 1):
+            # Liveness signal for the CLI-mode docker healthcheck (a hung
+            # step loop must be visible to the orchestrator as unhealthy;
+            # see settings.heartbeat_file). Best-effort only.
+            self._touch_heartbeat()
+
             # FIX (3.1 Major): actually observe the shutdown flag.
             if self._shutdown_check():
                 elapsed = (datetime.now() - start_time).total_seconds()
@@ -699,7 +732,12 @@ class AgentOrchestrator:
                     # Retry with more aggressive trimming
                     try:
                         print("🤔 Retrying with shorter context...")
-                        action = await self.llm.generate_action(
+                        # Rate-limited like every other LLM call: this
+                        # retry path previously called llm.generate_action
+                        # directly, bypassing the pacer entirely (a burst
+                        # of JSON retries would hammer the provider with
+                        # no gap at all).
+                        action = await self._call_llm_with_rate_limit(
                             messages=self.get_trimmed_history(
                                 window_size=self.settings.json_retry_window_size
                             ),
@@ -913,6 +951,19 @@ class AgentOrchestrator:
                 subprocess.Popen(["xdg-open", str(path)])
         except Exception as e:
             logger.debug(f"Could not auto-open captcha screenshot (non-fatal): {e}")
+
+    def _touch_heartbeat(self) -> None:
+        """Write a timestamped heartbeat file once per step - the liveness
+        signal docker-healthcheck.py checks in CLI (batch) mode. Never
+        raises: a heartbeat is an observability nicety, not a requirement."""
+        try:
+            heartbeat = getattr(self.settings, "heartbeat_file", None)
+            if heartbeat is None:
+                return
+            heartbeat.parent.mkdir(parents=True, exist_ok=True)
+            heartbeat.write_text(datetime.now().isoformat())
+        except Exception as e:
+            logger.debug(f"heartbeat write failed (non-fatal): {e}")
 
     def _initialize_conversation(self, task: str) -> None:
         """Initialize conversation with system prompt."""
@@ -1211,7 +1262,15 @@ Always think step-by-step and explain your reasoning."""
           failed compaction attempt never breaks the run.
         """
         if not self.settings.enable_context_compaction:
+            # Hard cap still applies with compaction off: without it the
+            # ONLY protection was get_trimmed_history(), which bounds what
+            # is SENT to the LLM - not what accumulates in process memory.
+            self._hard_cap_history()
             return
+
+        # Applies with compaction ON too: a repeatedly failing summarizer
+        # (see the except below) must not turn into unbounded growth.
+        self._hard_cap_history()
 
         # Exclude the system prompt (index 0) - it's constant and not what
         # we're trying to shrink.
@@ -1406,6 +1465,47 @@ Always think step-by-step and explain your reasoning."""
             messages=vision_messages, temperature=self.settings.temperature
         )
 
+    # Numeric argument fields that different LLM providers emit
+    # inconsistently as JSON numbers or strings ("5" vs 5). Coerced once,
+    # centrally, in _execute_action() before any tool branch sees them.
+    # Previously each branch had its own tolerance level (click/hover/
+    # upload/download coerced "5" via int(), type_text/select_option
+    # rejected it with InvalidType BEFORE their own coercion attempt,
+    # switch_tab rejected it outright, wait_for_element silently swapped
+    # in the default timeout) - so the same model output succeeded or
+    # failed depending on which tool it happened to target.
+    _INT_ARG_FIELDS = frozenset({"element_id", "index", "expect_element_visible"})
+    _NUMERIC_ARG_FIELDS = frozenset({"timeout_ms", "seconds"})
+
+    def _normalize_action_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of `args` with known int/float fields coerced from
+        their string / whole-float forms ("5", 5.0) to int/float. Values
+        that do not coerce ("abc", [1]) are left untouched - the per-tool
+        branch then reports its usual InvalidType error, so garbage still
+        fails loudly instead of being silently accepted."""
+        normalized = dict(args)
+        for field in self._INT_ARG_FIELDS:
+            value = normalized.get(field)
+            if value is None or isinstance(value, (bool, int)):
+                continue
+            if isinstance(value, str):
+                try:
+                    normalized[field] = int(value.strip())
+                except ValueError:
+                    continue
+            elif isinstance(value, float) and value.is_integer():
+                normalized[field] = int(value)
+        for field in self._NUMERIC_ARG_FIELDS:
+            value = normalized.get(field)
+            if value is None or isinstance(value, (bool, int, float)):
+                continue
+            if isinstance(value, str):
+                try:
+                    normalized[field] = float(value.strip())
+                except ValueError:
+                    continue
+        return normalized
+
     async def _execute_action(self, action: AgentAction) -> ActionResult:
         """
         Execute agent action via browser service.
@@ -1417,7 +1517,7 @@ Always think step-by-step and explain your reasoning."""
             ActionResult with execution status
         """
         tool = action.tool
-        args = action.args
+        args = self._normalize_action_args(action.args)
         result = ActionResult(success=False, message="Unknown tool")
 
         # Route to appropriate handler
@@ -1732,11 +1832,29 @@ Always think step-by-step and explain your reasoning."""
                 )
             else:
                 try:
+                    from ..infrastructure.browser import (  # noqa: PLC0415
+                        _check_navigation_host_policy,
+                    )
                     from ..utils.extract import html_to_markdown  # noqa: PLC0415
 
                     page_html = await self.browser.page.content()
                     url = await self.browser.get_current_url()
-                    markdown = await html_to_markdown(page_html, base_url=url)
+                    # Security (offline-conversion guard): the built-in
+                    # heuristic cleaner is pure offline text manipulation
+                    # (documented in extract.py), but the OPTIONAL crawl4ai
+                    # converter also receives base_url and its internals
+                    # are not audited for fetches. Apply the same host
+                    # policy as navigate(): when the current page's host
+                    # violates policy, hand the converter an empty base_url
+                    # so there is no privileged address to resolve against.
+                    convert_base_url = url
+                    if url and await _check_navigation_host_policy(
+                        url,
+                        self.settings.navigate_allowed_domains,
+                        self.settings.navigate_block_private_networks,
+                    ):
+                        convert_base_url = ""
+                    markdown = await html_to_markdown(page_html, base_url=convert_base_url)
                     if not markdown:
                         result = ActionResult(
                             success=False,
@@ -2205,10 +2323,11 @@ async def run_parallel_agents(
     return_exceptions=True and any exception becomes a failed TaskResult
     at the same list position as its task.
 
-    LLM pacing: each orchestrator has its own rate-limit clock by default;
-    free-tier operators should raise RATE_LIMIT_SECONDS to cover the added
-    concurrency (a shared limiter across N agents would mean N*interval
-    between any single agent's calls).
+    LLM pacing: all orchestrators share the ONE LLMService (and therefore
+    its shared rate limiter), so N parallel agents collectively respect
+    RATE_LIMIT_SECONDS / LOCAL_RATE_LIMIT_SECONDS as a single budget - a
+    given agent simply sees up to N*interval between its own calls. No
+    manual RATE_LIMIT_SECONDS compensation is needed anymore.
     """
     if not settings.enable_multi_page:
         raise ConfigurationError(

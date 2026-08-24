@@ -4,6 +4,7 @@ from .exceptions import (
     ActionError,
     AgentBaseException,
     AgentCriticalError,
+    AgentTimeoutError,
     BrowserError,
     CaptchaDetectedError,
     ConfigurationError,
@@ -11,7 +12,6 @@ from .exceptions import (
     LoopDetectedError,
     NetworkError,
     SelectorError,
-    TimeoutError,
     ValidationError,
 )
 from .models import (
@@ -36,7 +36,7 @@ __all__ = [
     "ValidationError",
     "CaptchaDetectedError",
     "AgentCriticalError",
-    "TimeoutError",
+    "AgentTimeoutError",
     # Models
     "AgentAction",
     "ActionResult",
