@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock.txt') }}
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('requirements/base.txt', 'requirements/dev.txt', 'requirements/lock.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-lint-
             ${{ runner.os }}-pip-
@@ -40,8 +40,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements/base.txt
+          python -m pip install -r requirements/dev.txt
       
       - name: Run ruff (fast linter)
         run: ruff check src/ tests/
@@ -77,7 +77,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock.txt') }}
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements/base.txt', 'requirements/dev.txt', 'requirements/lock.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
             ${{ runner.os }}-pip-
@@ -85,8 +85,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements/base.txt
+          python -m pip install -r requirements/dev.txt
       
       - name: Install Playwright browsers with system deps
         run: |
@@ -146,24 +146,24 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements/base.txt
 
       - name: Run dependency vulnerability audit (pip-audit)
         # FIX note: safety was replaced by pip-audit - safety 3.x requires
         # an interactive account login for `safety scan` and its legacy
         # `check` endpoint is dead, so it cannot gate a CI job. pip-audit
         # (PyPA) resolves the four requirements files AND the exact frozen
-        # deployable set (requirements.lock.txt) and FAILS on any known
+        # deployable set (requirements/lock.txt) and FAILS on any known
         # CVE in either - a real, unauthenticated gate. Auditing the lock
         # matters because that is what production actually installs.
         run: |
           python -m pip install "pip-audit>=2.6,<3"
           pip-audit \
-            -r requirements.txt \
-            -r requirements-api.txt \
-            -r requirements-ui.txt \
-            -r requirements-tools.txt \
-            -r requirements.lock.txt
+            -r requirements/base.txt \
+            -r requirements/api.txt \
+            -r requirements/ui.txt \
+            -r requirements/tools.txt \
+            -r requirements/lock.txt
 
       - name: Run bandit (code security issues)
         run: |
@@ -205,7 +205,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -r requirements/base.txt -r requirements/dev.txt
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
@@ -222,7 +222,7 @@ jobs:
   # ==========================================================================
   # JOB 3c: Lock-file environment verification
   # ==========================================================================
-  # requirements.lock.txt pins the EXACT environment the suite was validated
+  # requirements/lock.txt pins the EXACT environment the suite was validated
   # against (see its header). The matrix job above deliberately installs
   # bounded ranges across several Python versions; this job proves the
   # frozen set itself still installs and passes the suite, so "deploy from
@@ -244,7 +244,7 @@ jobs:
       - name: Install exactly the locked environment
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.lock.txt
+          python -m pip install -r requirements/lock.txt
 
       - name: Run test suite under the locked versions
         env:

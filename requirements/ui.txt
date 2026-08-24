@@ -2,8 +2,8 @@
 # Optional [ui] extra: API + Web UI service mode (MODE=ui / MODE=api in
 # Docker). Extends the [api] extra with WebSocket support for the live
 # progress channel used by the static web UI.
-#   pip install -r requirements-ui.txt
+#   pip install -r requirements/ui.txt
 #   make run-ui
 # ============================================================================
--r requirements-api.txt
+-r api.txt
 websockets>=12.0,<18.0

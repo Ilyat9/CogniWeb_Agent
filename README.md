@@ -248,14 +248,14 @@ MODEL_NAME=your-loaded-model-name  # без ограничения формат�
 
 ## 🧩 Фаза 4: Web UI, новые инструменты, stealth-режим
 
-Четыре расширения (подробности — в `ARCHITECTURE.md` → «Фаза 4»). Все новые флаги — opt-in с сохранением дефолтного поведения; единственное исключение — stealth-режим (включён по умолчанию, т.к. меняет только надёжность сессии, не функциональность).
+Четыре расширения (подробности — в `docs/ARCHITECTURE.md` → «Фаза 4»). Все новые флаги — opt-in с сохранением дефолтного поведения; единственное исключение — stealth-режим (включён по умолчанию, т.к. меняет только надёжность сессии, не функциональность).
 
 ### 5. Web UI поверх API
 
 Веб-интерфейс больше не требует работать с агентом через терминал/curl:
 
 ```bash
-make install-ui   # fastapi + uvicorn + websockets (requirements-ui.txt)
+make install-ui   # fastapi + uvicorn + websockets (requirements/ui.txt)
 make run-ui       # API + UI на http://localhost:8000
 ```
 
@@ -265,12 +265,12 @@ make run-ui       # API + UI на http://localhost:8000
 
 ### 6. Десять новых инструментов агента
 
-`wait_for_element` (условное ожидание вместо «слепого» `wait`), `find_element_by_text` (семантический поиск по живому DOM), `extract_page_content` (очищенный Markdown страницы — экономия 60–80% токенов; `ENABLE_MARKDOWN_EXTRACTION`, по умолчанию выключен), `extract_structured_data` (таблицы сразу в `context_data`), `hover_element`, `press_key`, `list_tabs`/`switch_tab` (работа с вкладками), `download_file` (сохранение в `DOWNLOAD_ALLOWED_DIR` с защитой от path traversal), `go_forward`. Полная таблица с обоснованием выбора — в `ARCHITECTURE.md`.
+`wait_for_element` (условное ожидание вместо «слепого» `wait`), `find_element_by_text` (семантический поиск по живому DOM), `extract_page_content` (очищенный Markdown страницы — экономия 60–80% токенов; `ENABLE_MARKDOWN_EXTRACTION`, по умолчанию выключен), `extract_structured_data` (таблицы сразу в `context_data`), `hover_element`, `press_key`, `list_tabs`/`switch_tab` (работа с вкладками), `download_file` (сохранение в `DOWNLOAD_ALLOWED_DIR` с защитой от path traversal), `go_forward`. Полная таблица с обоснованием выбора — в `docs/ARCHITECTURE.md`.
 
 ### 7. Идеи Browser-Use и Crawl4AI (реализованы как принятые решения)
 
 - **Визуальный fallback (set-of-marks)**: после `VISUAL_FALLBACK_ERROR_STREAK` (по умолчанию 2) подряд ошибок `InvalidElementId` следующий шаг переключается на аннотированный скриншот (рамки с номерами = `element_id`). Флаг `ENABLE_VISUAL_FALLBACK` — альтернативное написание существовавшего до этой задачи `ENABLE_VISION_FALLBACK`; его дефолт `true` **сохранён без изменений** (правило проекта: дефолты существующих фичей не меняются). Эффективное поведение по умолчанию всё равно выключено: каждый vision-вызов гейтится `MODEL_SUPPORTS_VISION` (дефолт `false`) — текстовые провайдеры не получают изображения, пока оба флага не включены явно. Пакет `browser-use` НЕ используется как зависимость; платные captcha-solving сервисы НЕ интегрируются — путь для показанной капчи прежний: `CaptchaDetectedError` → ручное решение → circuit breaker.
-- **Markdown-экстракция**: `extract_page_content` берёт HTML уже открытой Playwright-страницы; конвертация через опциональный `crawl4ai` (только как HTML→Markdown конвертер, свой браузер не запускает; `requirements-tools.txt`, ленивый импорт) с fallback на встроенный беззависимый очиститель.
+- **Markdown-экстракция**: `extract_page_content` берёт HTML уже открытой Playwright-страницы; конвертация через опциональный `crawl4ai` (только как HTML→Markdown конвертер, свой браузер не запускает; `requirements/tools.txt`, ленивый импорт) с fallback на встроенный беззависимый очиститель.
 
 ### 8. Stealth-режим браузера (`ENABLE_STEALTH_MODE`, по умолчанию `true`)
 
@@ -325,7 +325,7 @@ docker build -t cogniweb-agent .
 docker run --rm -v $(pwd)/.env:/app/.env:ro cogniweb-agent
 ```
 
-**Подробная инструкция**: [QUICK_START.md](QUICK_START.md)
+**Подробная инструкция**: [QUICK_START.md](docs/QUICK_START.md)
 
 ## 📁 Структура проекта
 
@@ -335,8 +335,12 @@ docker run --rm -v $(pwd)/.env:/app/.env:ro cogniweb-agent
 ├── Dockerfile                   # Многоэтапная сборка (non-root user)
 ├── Makefile                     # Автоматизация команд
 ├── pyproject.toml               # Конфигурация инструментов (black, ruff, pytest)
-├── requirements.txt             # Production зависимости
-├── requirements-dev.txt         # Development зависимости (pytest, ruff, etc)
+├── requirements/                # Файлы зависимостей
+│   ├── base.txt                 # Production зависимости
+│   ├── dev.txt                  # Development зависимости (pytest, ruff, etc)
+│   ├── api.txt / ui.txt         # Опциональные API/UI-зависимости
+│   ├── tools.txt                # Опциональные tools-зависимости
+│   ├── base.in / lock.txt       # pip-compile источник и точный замороженный набор
 ├── .env.example                 # Шаблон конфигурации
 │
 ├── src/
@@ -375,11 +379,11 @@ docker run --rm -v $(pwd)/.env:/app/.env:ro cogniweb-agent
 ├── screenshots/                 # Error snapshots (создаётся при запуске)
 ├── agent.log                    # Лог файл (создаётся при запуске)
 │
-├── QUICK_START.md               # Подробная инструкция по установке
-├── ARCHITECTURE.md              # Архитектурная документация
-├── CLAUDE.md                    # Руководство для Claude Code
-├── docs/DEPLOYMENT.md           # Продакшен-деплой (nginx/TLS/systemd/бэкапы)
-├── docs/MONITORING.md           # Prometheus /metrics, /health, Sentry
+├── docs/
+│   ├── QUICK_START.md           # Подробная инструкция по установке
+│   ├── ARCHITECTURE.md          # Архитектурная документация
+│   ├── DEPLOYMENT.md            # Продакшен-деплой (nginx/TLS/systemd/бэкапы)
+│   └── MONITORING.md            # Prometheus /metrics, /health, Sentry
 └── LICENSE.md                   # MIT License
 ```
 
@@ -539,7 +543,7 @@ make docker-clean
 └──────────────────────────────────┘
 ```
 
-**Подробнее**: [ARCHITECTURE.md](ARCHITECTURE.md)
+**Подробнее**: [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## ⚠️ Ограничения
 
@@ -604,8 +608,7 @@ MIT License — см. [LICENSE.md](LICENSE.md)
 **Поддержка**: Issues и Pull Requests приветствуются
 
 **Документация**:
-- [Быстрый старт](QUICK_START.md)
-- [Архитектура](ARCHITECTURE.md)
+- [Быстрый старт](docs/QUICK_START.md)
+- [Архитектура](docs/ARCHITECTURE.md)
 - [Продакшен-деплой](docs/DEPLOYMENT.md)
 - [Мониторинг](docs/MONITORING.md)
-- [Руководство для Claude Code](CLAUDE.md)

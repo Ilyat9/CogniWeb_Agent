@@ -24,16 +24,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Копирование requirements для кэширования слоя
-# requirements.lock.txt используется как CONSTRAINTS-файл (-c): версии
+# requirements/lock.txt используется как CONSTRAINTS-файл (-c): версии
 # устанавливаемых пакетов фиксируются на проверенном тестами наборе
 # (см. его заголовок), при этом резолвер всё ещё может доставить то, чего
 # в lock нет (например crawl4ai из tools-extra). Это закрывает разрыв
 # "CI/Docker ставят диапазонные зависимости": образ собирается ровно на
 # тех версиях, на которых прогнан тестовый набор.
-COPY requirements.txt requirements-api.txt requirements-ui.txt requirements-tools.txt requirements.lock.txt /app/
+COPY requirements/ /app/requirements/
 
 # MODE=api ставит fastapi/uvicorn/websockets (extra [ui], включает [api]);
-# MODE=cli (по умолчанию) ограничивается базовым requirements.txt.
+# MODE=cli (по умолчанию) ограничивается базовым requirements/base.txt.
 # TOOLS=true дополнительно ставит опциональные tools-зависимости
 # (playwright-stealth, crawl4ai) - лениво импортируемые улучшения.
 ARG MODE=cli
@@ -42,12 +42,12 @@ ARG TOOLS=false
 # Установка Python зависимостей (как root)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     if [ "$MODE" = "api" ]; then \
-        pip install --no-cache-dir -c /app/requirements.lock.txt -r /app/requirements-ui.txt; \
+        pip install --no-cache-dir -c /app/requirements/lock.txt -r /app/requirements/ui.txt; \
     else \
-        pip install --no-cache-dir -c /app/requirements.lock.txt -r /app/requirements.txt; \
+        pip install --no-cache-dir -c /app/requirements/lock.txt -r /app/requirements/base.txt; \
     fi && \
     if [ "$TOOLS" = "true" ]; then \
-        pip install --no-cache-dir -c /app/requirements.lock.txt -r /app/requirements-tools.txt; \
+        pip install --no-cache-dir -c /app/requirements/lock.txt -r /app/requirements/tools.txt; \
     fi
 
 # Установка Playwright браузеров БЕЗ --with-deps (системные зависимости уже есть)

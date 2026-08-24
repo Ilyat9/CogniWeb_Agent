@@ -48,8 +48,8 @@ make install-dev
 
 Эта команда автоматически:
 1. ✅ Обновит pip, setuptools, wheel
-2. ✅ Установит production зависимости из `requirements.txt`
-3. ✅ Установит development зависимости из `requirements-dev.txt` (pytest, ruff, black, etc)
+2. ✅ Установит production зависимости из `requirements/base.txt`
+3. ✅ Установит development зависимости из `requirements/dev.txt` (pytest, ruff, black, etc)
 4. ✅ Скачает браузер Chromium (playwright install chromium)
 5. ✅ Установит системные зависимости для Playwright
 
@@ -59,7 +59,7 @@ make install-dev
 make install
 ```
 
-Эта команда устанавливает только `requirements.txt` и браузер Chromium.
+Эта команда устанавливает только `requirements/base.txt` и браузер Chromium.
 
 ### Шаг 3: Настройка окружения
 
@@ -143,7 +143,7 @@ docker build -t cogniweb-agent .
 
 1. **Stage 1 (builder)**: Установка зависимостей как root
    - Системные пакеты (fonts, ca-certificates)
-   - Python зависимости из `requirements.txt`
+   - Python зависимости из `requirements/base.txt`
    - Playwright браузеры (chromium)
 
 2. **Stage 2 (runtime)**: Настройка окружения
@@ -254,7 +254,7 @@ docker run --rm \
 | Команда | Описание |
 |---------|----------|
 | `make check-deps` | Проверить устаревшие зависимости |
-| `make update-deps` | Обновить requirements.txt |
+| `make update-deps` | Обновить requirements/base.txt |
 | `make ci` | Эмулировать CI пайплайн локально |
 | `make info` | Показать информацию о проекте |
 

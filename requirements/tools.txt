@@ -2,7 +2,7 @@
 # Optional [tools] extra: heavy/optional capabilities that must stay out of
 # the base requirements.txt. Everything here is imported LAZILY - the agent
 # runs (with a logged warning + fallback) when none of it is installed.
-#   pip install -r requirements-tools.txt
+#   pip install -r requirements/tools.txt
 # ============================================================================
 
 # Task 4 (stealth mode): fuller anti-fingerprinting patch set on top of the

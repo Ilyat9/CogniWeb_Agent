@@ -2,8 +2,8 @@
 3.3 (optional [api] extra): a small FastAPI service wrapper around the
 orchestrator.
 
-NOT part of base requirements.txt - install via requirements-api.txt
-(fastapi + uvicorn) or requirements-ui.txt (fastapi + uvicorn + websockets,
+NOT part of base requirements - install via requirements/api.txt
+(fastapi + uvicorn) or requirements/ui.txt (fastapi + uvicorn + websockets,
 adds the WebSocket live-progress channel) and run with MODE=api in Docker
 (see Dockerfile) or:
 
@@ -66,7 +66,6 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field, field_validator
 from starlette.staticfiles import StaticFiles
 
 from ..core.exceptions import ConfigurationError
@@ -74,6 +73,13 @@ from ..core.models import ActionResult, AgentAction, TaskResult
 from ..infrastructure import metrics as _metrics
 from ..infrastructure.task_policy import TaskPolicy
 from ..infrastructure.usage import UsageTracker
+from .models import (  # noqa: F401 - re-export
+    _SAFE_TENANT_ID,
+    DEFAULT_TENANT_ID,
+    TaskStatus,
+    TaskSubmission,
+)
+from .security import mask_settings  # noqa: F401 - re-export
 
 logger = logging.getLogger(__name__)
 
@@ -91,55 +97,8 @@ LifecycleHook = Callable[[], Awaitable[None]]
 #               this task on (runners that ignore it never see it)
 _RUNNER_OPTIONAL_KWARGS = ("emit", "stop_check", "on_step", "tenant_id")
 
-# Multi-tenancy: tenant_id is an IDENTIFIER, not an identity claim. The
-# regex keeps it a safe path segment (it becomes
-# {USER_DATA_DIR}/tenants/{tenant_id}) and a safe log/label value.
-_SAFE_TENANT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-DEFAULT_TENANT_ID = "default"
-
-
-class TaskSubmission(BaseModel):
-    task: str = Field(min_length=1)
-    starting_url: str | None = None
-    # Multi-tenancy: optional, defaults to the historical single-tenant id
-    # so existing clients/UI/tests are byte-compatible. There is NO
-    # authentication behind it on purpose (documented scope decision): any
-    # client may claim any tenant_id; proving who may claim what is a
-    # separate auth problem, not solved here.
-    tenant_id: str = Field(
-        default=DEFAULT_TENANT_ID,
-        min_length=1,
-        max_length=64,
-        description="Tenant identifier; isolates browser profile, queue "
-        "scheduling and usage accounting per tenant.",
-    )
-
-    @field_validator("tenant_id")
-    @classmethod
-    def _validate_tenant_id(cls, v: str) -> str:
-        if not _SAFE_TENANT_ID.match(v):
-            raise ValueError("tenant_id must match ^[A-Za-z0-9_-]{1,64}$")
-        return v
-
-
-class TaskStatus(BaseModel):
-    task_id: str
-    state: str  # queued | running | finished
-    submitted_at: str
-    result: dict[str, Any] | None = None
-    # Hardening supplement (on_step hook): live progress DURING a run -
-    # non-None after the loop's first executed step, None while queued.
-    current_step: int | None = None
-    last_tool: str | None = None
-    # Multi-tenancy: echoed so a client can confirm which tenant bucket
-    # its task landed in.
-    tenant_id: str = DEFAULT_TENANT_ID
-
-
-# /config masks any field whose name looks secret-ish. Deliberately
-# over-broad (key/token/secret/password/credential): false positives cost a
-# masked value, false negatives leak a credential to the UI.
-_SECRET_NAME_HINTS = ("key", "token", "secret", "password", "credential")
+# Multi-tenancy: tenant_id is an IDENTIFIER, not an identity claim; its
+# validation regex lives in src/api/models.py (_SAFE_TENANT_ID).
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # Hardening (WS auth): browsers cannot set Authorization headers on a
@@ -214,26 +173,6 @@ def _init_sentry(settings: Any | None) -> None:
 # Default sweep interval for idle tenant browser contexts (seconds) when no
 # settings object is available (settings-less test wiring).
 CONTEXT_SWEEP_INTERVAL_SECONDS = 60
-
-
-def _mask_value(value: Any) -> Any:
-    if isinstance(value, str) and value:
-        return f"***masked ({len(value)} chars)***"
-    return "***masked***"
-
-
-def mask_settings(settings_dict: dict[str, Any]) -> dict[str, Any]:
-    """Return a UI-safe copy of a settings dump: every secret-looking field
-    masked, everything else (bools, ints, paths, lists) passed through."""
-    masked = {}
-    for name, value in settings_dict.items():
-        if any(hint in name.lower() for hint in _SECRET_NAME_HINTS):
-            masked[name] = _mask_value(value)
-        elif isinstance(value, Path):
-            masked[name] = str(value)
-        else:
-            masked[name] = value
-    return masked
 
 
 def create_app(

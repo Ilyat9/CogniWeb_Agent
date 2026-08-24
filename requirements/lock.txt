@@ -1,12 +1,12 @@
 # ============================================================================
-# requirements.lock.txt - EXACT tested environment (pip freeze).
+# requirements/lock.txt - EXACT tested environment (pip freeze).
 # Fix (unbounded dependencies / unpinned installs): a clean install from
-# the bounded ranges in requirements*.txt can still resolve to newer
+# the bounded ranges in requirements/*.txt can still resolve to newer
 # versions than the suite was validated against. This file pins the
 # full environment the test suite (pytest), linters and pip-audit
 # actually passed with - deploy from it when reproducibility matters:
-#   pip install -r requirements.lock.txt
-# Regenerate after intentional upgrades:  pip freeze > requirements.lock.txt
+#   pip install -r requirements/lock.txt
+# Regenerate after intentional upgrades:  pip freeze > requirements/lock.txt
 # ============================================================================
 annotated-doc==0.0.5
 annotated-types==0.8.0

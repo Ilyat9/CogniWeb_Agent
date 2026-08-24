@@ -33,7 +33,7 @@ help: ## Показать это сообщение помощи
 install: ## Установить production зависимости и браузеры
 	@echo "$(CYAN)Installing production dependencies...$(RESET)"
 	$(PIP) install --upgrade pip setuptools wheel
-	$(PIP) install -r requirements.txt
+	$(PIP) install -r requirements/base.txt
 	@echo "$(CYAN)Installing Playwright browsers (chromium only)...$(RESET)"
 	playwright install chromium
 	@echo "$(GREEN)✓ Installation complete!$(RESET)"
@@ -47,12 +47,12 @@ install-dev: install ## Установить dev зависимости (тес�
 
 install-tools: ## Установить опциональные tools-зависимости (stealth+, crawl4ai)
 	@echo "$(CYAN)Installing optional tools dependencies...$(RESET)"
-	$(PIP) install -r requirements-tools.txt
+	$(PIP) install -r requirements/tools.txt
 	@echo "$(GREEN)✓ Optional tools installed (lazy imports will pick them up)$(RESET)"
 
 install-ui: ## Установить зависимости API + Web UI (fastapi/uvicorn/websockets)
 	@echo "$(CYAN)Installing API + Web UI dependencies...$(RESET)"
-	$(PIP) install -r requirements-ui.txt
+	$(PIP) install -r requirements/ui.txt
 	@echo "$(GREEN)✓ API + UI dependencies installed (make run-ui)$(RESET)"
 
 # ==============================================================================
@@ -73,7 +73,7 @@ run-ui: ## Запустить API + Web UI (uvicorn + static UI, хост из A
 
 check-no-captcha-solvers: ## Гвард: платные капча-солверы не протащены в код/зависимости
 	@echo "$(CYAN)Checking for captcha-solver services in src/ and requirements...$(RESET)"
-	@if grep -riE "2captcha|anti-captcha|capmonster|capsolver|gatesolve" src/ requirements*.txt; then \
+	@if grep -riE "2captcha|anti-captcha|capmonster|capsolver|gatesolve" src/ requirements/*.txt; then \
 		echo "$(RED)✗ Found a captcha-solver reference - this project does not integrate paid captcha solving$(RESET)"; \
 		exit 1; \
 	fi
@@ -216,10 +216,10 @@ check-deps: ## Проверить установленные зависимос�
 	playwright --version
 	playwright install --dry-run chromium
 
-update-deps: ## Обновить requirements.txt до последних версий
-	@echo "$(CYAN)Updating requirements.txt...$(RESET)"
+update-deps: ## Обновить requirements/base.txt до последних версий
+	@echo "$(CYAN)Updating requirements/base.txt...$(RESET)"
 	$(PIP) install --upgrade pip-tools
-	pip-compile --upgrade requirements.in -o requirements.txt
+	pip-compile --upgrade requirements/base.in -o requirements/base.txt
 	@echo "$(GREEN)✓ Dependencies updated!$(RESET)"
 
 # ==============================================================================

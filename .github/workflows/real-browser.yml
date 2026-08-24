@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-real-browser-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          key: ${{ runner.os }}-pip-real-browser-${{ hashFiles('requirements/base.txt', 'requirements/dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-real-browser-
             ${{ runner.os }}-pip-
@@ -51,7 +51,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -r requirements/base.txt -r requirements/dev.txt
 
       - name: Install Playwright Chromium with system deps
         run: python -m playwright install --with-deps chromium

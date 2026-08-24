@@ -1,15 +1,8 @@
 # ============================================================================
-# CogniWeb Agent - Direct dependencies (compile with pip-compile)
+# Battle-Ready Browser Agent v2.0 - Requirements
 # ============================================================================
-# requirements.txt is generated from this file via `make update-deps`
-# (pip-compile --generate-hashes requirements.in -o requirements.txt).
-#
-# VERSION POLICY: every dependency carries an UPPER BOUND (< next.major)
-# so a clean install can never silently pull an untested major release
-# (e.g. openai jumped 1.x -> 3.x with renamed exception classes while this
-# code was written against 1.x semantics). The exact tested set is frozen
-# in requirements.lock.txt; raise a bound only after running the test
-# suite against the new major.
+# Production-grade dependencies. Bounded ranges: the exact tested set is
+# frozen in lock.txt (see base.in for the policy).
 # ============================================================================
 
 # Core Dependencies

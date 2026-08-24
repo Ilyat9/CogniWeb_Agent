@@ -349,8 +349,8 @@ class DOMProcessor:
 # Stage 1: Builder (as root)
 FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 RUN apt-get update && apt-get install -y ca-certificates fonts-liberation
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements/base.txt /app/
+RUN pip install --no-cache-dir -r requirements/base.txt
 RUN playwright install chromium
 
 # Stage 2: Runtime (non-root user)
@@ -438,7 +438,7 @@ on:
 - uses: actions/cache@v4
   with:
     path: ~/.cache/pip
-    key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    key: ${{ runner.os }}-pip-${{ hashFiles('requirements/base.txt') }}
 ```
 
 **Docker layers**:
@@ -476,11 +476,11 @@ make ci
 **Production vs Development**:
 ```makefile
 install: ## Production dependencies
-    pip install -r requirements.txt
+    pip install -r requirements/base.txt
     playwright install chromium
 
 install-dev: install ## Add dev dependencies
-    pip install -r requirements-dev.txt
+    pip install -r requirements/dev.txt
     playwright install --with-deps chromium
 ```
 
@@ -1035,7 +1035,7 @@ TaskRunner остаётся 2-аргументным контрактом: во�
 
 **Browser-Use (только визуальное распознавание, без пакета-зависимости, без captcha-solving сервисов).** Существующий vision fallback расширен вторым триггером: после `VISUAL_FALLBACK_ERROR_STREAK` (дефолт 2) подряд идущих шагов с ошибкой `InvalidElementId` следующий шаг переключается на аннотированный скриншот (set-of-marks: рамки с номерами поверх живого DOM через `page.evaluate`-оверлей, номер = тот же `element_id`, что в текстовом режиме; без Pillow/cairosvg). Стрик сбрасывается любым успешным шагом и после успешного vision-шага. Флаг: `ENABLE_VISUAL_FALLBACK` — алиас существовавшего до задачи `ENABLE_VISION_FALLBACK`; его дефолт `true` сохранён без изменений (правило проекта: дефолты существующих фичей не меняются), эффективное поведение по умолчанию всё равно выключено гейтом `MODEL_SUPPORTS_VISION` (дефолт `false`). Пакет `browser-use` НЕ устанавливается (свой оркестратор + своя версия Playwright = конфликт без выгоды). Сторонние платные captcha-сервисы (CapSolver/2captcha/…) не интегрируются: основной путь для показанной капчи не изменился — `CaptchaDetectedError` → checkpoint → ручное решение → circuit breaker (UX ожидания улучшен в Web UI: явный баннер капчи и статус breaker с предложением перезапуска).
 
-**Crawl4AI (подход, обёртка с fallback, без второго браузерного движка).** `extract_page_content` берёт HTML уже открытой Playwright-страницы (`page.content()`) и конвертирует: сначала ленивый импорт `crawl4ai.markdown_generation_strategy.DefaultMarkdownGenerator` (используется ТОЛЬКО как HTML→Markdown конвертер, собственный браузер crawl4ai никогда не запускается), при любой ошибке/отсутствии пакета — встроенный беззависимый эвристический очиститель (`src/utils/extract.py`: снос `<script>/<style>/<nav>/<footer>/<aside>/…`, заголовки → `#`, ссылки → `[text](abs-url)`, списки → `- `, ячейки таблиц → pipe-строки). Флаг `ENABLE_MARKDOWN_EXTRACTION` (дефолт `false`); при выключенном флаге инструмент отвечает явной ошибкой `MarkdownExtractionDisabled`. Опциональная зависимость — `requirements-tools.txt`.
+**Crawl4AI (подход, обёртка с fallback, без второго браузерного движка).** `extract_page_content` берёт HTML уже открытой Playwright-страницы (`page.content()`) и конвертирует: сначала ленивый импорт `crawl4ai.markdown_generation_strategy.DefaultMarkdownGenerator` (используется ТОЛЬКО как HTML→Markdown конвертер, собственный браузер crawl4ai никогда не запускается), при любой ошибке/отсутствии пакета — встроенный беззависимый эвристический очиститель (`src/utils/extract.py`: снос `<script>/<style>/<nav>/<footer>/<aside>/…`, заголовки → `#`, ссылки → `[text](abs-url)`, списки → `- `, ячейки таблиц → pipe-строки). Флаг `ENABLE_MARKDOWN_EXTRACTION` (дефолт `false`); при выключенном флаге инструмент отвечает явной ошибкой `MarkdownExtractionDisabled`. Опциональная зависимость — `requirements/tools.txt`.
 
 ### Задача 4 — Stealth-режим браузера
 
@@ -1044,7 +1044,7 @@ TaskRunner остаётся 2-аргументным контрактом: во�
 Реализация в `BrowserService`:
 1. **Init-скрипты** (`context.add_init_script`, применяются ко всем будущим страницам): `navigator.webdriver` → `undefined`, `window.chrome` заглушка, `navigator.languages` согласован с локалью, непустые `navigator.plugins`/`mimeTypes` (Chrome PDF Viewer), WebGL vendor/renderer вместо заглушки headless-рендерера (`ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)`).
 2. **Согласованный профиль контекста**: `STEALTH_USER_AGENT` / `STEALTH_LOCALE` / `STEALTH_TIMEZONE` / `STEALTH_VIEWPORT_*` применяются вместе; `Accept-Language` и `sec-ch-ua-platform` (в `captcha_avoidance_mode`) выводятся из тех же полей. Принцип: рассинхрон фингерпринта — более сильный сигнал детекции, чем «неидеальный, но цельный» профиль; поэтому «рандом ради рандома» не используется.
-3. **playwright-stealth** — опциональная надстройка (ленивый импорт, один warning за run при отсутствии, при ошибке применения — continue): перенесён из базового `requirements.txt` в `requirements-tools.txt`. Встроенные init-скрипты работают и без него.
+3. **playwright-stealth** — опциональная надстройка (ленивый импорт, один warning за run при отсутствии, при ошибке применения — continue): перенесён из базового `requirements/base.txt` в `requirements/tools.txt`. Встроенные init-скрипты работают и без него.
 4. **Человекоподобное взаимодействие**: клику предшествует малая случайная пауза + многоточечная траектория `page.mouse.move()` с джиттером (не мгновенный прыжок в точные координаты); `type_text` уже вводит посимвольно со случайной задержкой (`TYPING_SPEED_MIN/MAX`). Источник рандома — уже одобренный в `.bandit` (`B311`).
 5. **`ENABLE_STEALTH_MODE`** — единственный новый флаг с дефолтом `true` (старое имя `ENABLE_STEALTH` работает как алиас): функциональное поведение агента не меняется, только надёжность сессии, поэтому включение по умолчанию безопасно; выключение возвращает точное до-stealth поведение запуска (в т.ч. legacy UA в non-persistent ветке) — регрессионный тест это фиксирует.
 

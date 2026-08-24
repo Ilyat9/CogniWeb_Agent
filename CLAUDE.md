@@ -13,7 +13,7 @@ CogniWeb_Agent is a production-ready autonomous web browser agent built with Pyt
 ### Setup
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements/base.txt
 
 # Install browser binaries
 playwright install chromium
@@ -154,8 +154,8 @@ Access control: `API_BIND_HOST` (default 127.0.0.1 - never 0.0.0.0 by default) a
 ## Visual fallback & markdown extraction (Phase 4)
 
 - `ENABLE_VISUAL_FALLBACK` (alias `ENABLE_VISION_FALLBACK`, default FALSE) + `MODEL_SUPPORTS_VISION`: switch a step to an annotated screenshot (set-of-marks, numbers = element_id) when DOM extraction is empty/failed/noisy OR after `VISUAL_FALLBACK_ERROR_STREAK` (default 2) consecutive InvalidElementId steps.
-- `ENABLE_MARKDOWN_EXTRACTION` (default FALSE): `extract_page_content` - crawl4ai as OPTIONAL converter (requirements-tools.txt, lazy import, never launches its own browser) with a built-in stdlib-only fallback cleaner (`src/utils/extract.py`).
-- Optional extras live in `requirements-tools.txt` (playwright-stealth, crawl4ai) and `requirements-ui.txt` (fastapi+uvicorn+websockets) - never in base requirements.txt.
+- `ENABLE_MARKDOWN_EXTRACTION` (default FALSE): `extract_page_content` - crawl4ai as OPTIONAL converter (requirements/tools.txt, lazy import, never launches its own browser) with a built-in stdlib-only fallback cleaner (`src/utils/extract.py`).
+- Optional extras live in `requirements/tools.txt` (playwright-stealth, crawl4ai) and `requirements/ui.txt` (fastapi+uvicorn+websockets) - never in base requirements/base.txt.
 
 ## Loop Detection Logic
 
