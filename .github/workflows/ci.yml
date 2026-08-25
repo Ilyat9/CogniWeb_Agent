@@ -246,6 +246,12 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements/lock.txt
 
+      - name: Create test directories
+        # Same preparation as the matrix job - some tests write into the
+        # repo-level screenshots/ browser_data/ logs/ defaults.
+        run: |
+          mkdir -p screenshots browser_data logs
+
       - name: Run test suite under the locked versions
         env:
           OPENAI_API_KEY: "sk-test-key-for-ci-not-real"

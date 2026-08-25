@@ -20,6 +20,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+try:  # prometheus-client is an OPTIONAL extra (requirements/api.txt); CI's
+    # unit-test and lock-verify jobs intentionally install a minimal env
+    # without it, so the error-path tests below must skip, not fail.
+    import prometheus_client  # noqa: F401
+
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
+
 from src.agent.orchestrator import AgentOrchestrator  # noqa: E402
 from src.config.settings import Settings  # noqa: E402
 from src.core.models import ActionResult, AgentAction  # noqa: E402
@@ -278,8 +287,17 @@ class TestMetricsWithoutLibrary:
         assert metrics_no_prometheus.CONTENT_TYPE_LATEST == "text/plain; charset=utf-8"
 
 
+@pytest.mark.skipif(
+    not PROMETHEUS_AVAILABLE,
+    reason="prometheus-client (optional extra) not installed; degraded path is covered by TestMetricsWithoutLibrary",
+)
 class TestMetricsErrorPaths:
-    """With the library present, observer failures must never propagate."""
+    """With the library present, observer failures must never propagate.
+
+    Skipped when prometheus-client is not installed: the module degrades to
+    no-op stubs without it (that path is covered by TestMetricsWithoutLibrary
+    above), and the metric objects these tests monkeypatch simply do not
+    exist in the degraded module."""
 
     def test_observe_task_swallows_metric_errors(self, monkeypatch):
         import src.infrastructure.metrics as mm
