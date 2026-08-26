@@ -9,6 +9,8 @@ network/browser), plus one API-level restart test through TestClient.
 import asyncio
 import sys
 import time
+import warnings
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -41,10 +43,16 @@ def make_settings(tmp_path, **overrides):
 
 
 def make_record(task_id: str, state: str = "finished", **overrides):
+    # FIX (time bomb): submitted_at defaults to NOW, not a hardcoded date.
+    # The previous constant ("2026-08-24T10:00:00") aged past the default
+    # 24h finished-task TTL within two days of real time, so every seeded
+    # record was pruned immediately after startup hydration and the
+    # restart tests deterministically returned 404 - which looked exactly
+    # like a hydration/startup race but was retention working as designed.
     record = {
         "task_id": task_id,
         "state": state,
-        "submitted_at": "2026-08-24T10:00:00",
+        "submitted_at": datetime.now().isoformat(),
         "task": f"task {task_id}",
         "starting_url": "https://example.com",
         "result": None,
@@ -239,6 +247,56 @@ class TestAppPersistenceIntegration:
             assert status["result"]["steps_taken"] == 4
         finally:
             client.__exit__(None, None, None)
+
+    def test_first_request_served_after_hydration_completes(self, tmp_path):
+        """Regression guard for BOTH failure modes seen around restart
+        hydration: (1) hydration from SQLite must be COMPLETE before the
+        first HTTP request is served - asserted structurally via the
+        lifespan contract, not by timing; (2) the hydrated record must
+        SURVIVE the post-hydration TTL prune - the seed uses a fresh
+        submitted_at, because a previously hardcoded date aged past the
+        24h finished-task TTL within days and produced deterministic 404s
+        that looked exactly like a hydration/startup race. Also asserts
+        the lifespan migration silenced the deprecated on_event
+        DeprecationWarnings."""
+        settings = make_settings(tmp_path)
+        db_path = settings.task_db_path
+
+        async def seed():
+            store = TaskStore(db_path)
+            await store.initialize()
+            await store.save(make_record("zombie", state="running", current_step=4))
+            await store.close()
+
+        asyncio.run(seed())
+
+        async def noop_runner(task, starting_url):
+            raise AssertionError("interrupted task must not be re-run")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            client = self._make_client(noop_runner, settings)
+            try:
+                # The VERY first request must already observe hydrated state.
+                response = client.get("/task/zombie")
+                assert response.status_code == 200, response.json()
+                status = response.json()
+                assert status["state"] == "finished"
+                assert status["result"]["error"] == "InterruptedByRestart"
+                assert status["result"]["steps_taken"] == 4
+                # ...and the in-memory working set is populated too.
+                assert list(client.app.state.tasks) == ["zombie"]
+            finally:
+                client.__exit__(None, None, None)
+
+        # The lifespan migration must also silence the deprecated on_event
+        # DeprecationWarnings that used to pollute every pytest run.
+        on_event_warnings = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning) and "on_event" in str(w.message)
+        ]
+        assert not on_event_warnings
 
     def test_ttl_prune_drops_expired_finished_tasks(self, tmp_path):
         """Retention: expired finished records are pruned from memory AND

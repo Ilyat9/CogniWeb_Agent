@@ -59,7 +59,8 @@ import sys
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -193,12 +194,39 @@ def create_app(
     are lazily loaded on first request.
 
     on_startup / on_shutdown (optional): async no-arg hooks run inside the
-    app's startup/shutdown events. They let production wiring (see
+    app's lifespan startup/shutdown phases. They let production wiring (see
     build_default_app) own heavy shared resources - the browser and the
     LLM client - for the app's WHOLE lifetime instead of per task, while
-    injected-runner tests keep constructing nothing."""
+    injected-runner tests keep constructing nothing.
 
-    app = FastAPI(title="CogniWeb Agent API", version="1.1")
+    FIX (lifecycle): the app's lifecycle runs through the modern lifespan
+    context manager instead of the deprecated @app.on_event hooks.
+    Motivation: (a) on_event is deprecated and emitted DeprecationWarnings
+    on every test/CI run with the installed starlette 1.6.0 / fastapi
+    0.141.1; (b) the lifespan contract guarantees BY CONSTRUCTION that
+    everything before `yield` completes before the app serves its first
+    request, so SQLite hydration ("task history survives restart") no
+    longer relies on legacy hook semantics a dependency bump could change.
+    Honesty note: a suspected "startup race vs first request" on this
+    stack was investigated and NOT reproduced - the deterministic 404s
+    right after restart came from the finished-task TTL prune dropping
+    records whose seeded submitted_at had aged past task_ttl_hours (fixed
+    in tests/test_task_store.py::make_record). The migration is kept as
+    deprecation cleanup plus contractual defense-in-depth."""
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Startup phase (before yield) hydrates the task store and starts
+        background workers; shutdown phase (after yield, in finally) drains
+        and cleans up. Exceptions in the startup phase abort app startup,
+        exactly like a raising on_event("startup") handler did."""
+        await _start_worker()
+        try:
+            yield
+        finally:
+            await _stop_worker()
+
+    app = FastAPI(title="CogniWeb Agent API", version="1.1", lifespan=lifespan)
     # Internal records: plain dicts (not TaskStatus) so we can carry the
     # raw task text / starting_url alongside the visible status fields,
     # plus the UI-facing step-event buffer and pub/sub state.
@@ -581,8 +609,12 @@ def create_app(
         except Exception:
             logger.exception("Post-hydration prune failed")
 
-    @app.on_event("startup")
     async def _start_worker() -> None:
+        """Startup phase of the lifespan (see create_app docstring): wire
+        the runner, run injected on_startup hook, hydrate the SQLite task
+        store into memory and start background workers. Runs strictly
+        before the app serves its first request - guaranteed by the
+        lifespan contract rather than by legacy on_event semantics."""
         app.state.task_runner = task_runner
         if on_startup is not None:
             await on_startup()
@@ -592,8 +624,12 @@ def create_app(
         if app.state.context_pool is not None:
             app.state.context_sweeper = asyncio.create_task(_context_sweeper())
 
-    @app.on_event("shutdown")
     async def _stop_worker() -> None:
+        """Shutdown phase of the lifespan (see create_app docstring): drain
+        background workers, close tenant browser contexts and the task
+        store, run the injected on_shutdown hook. Runs in the `finally`
+        branch of the lifespan, so cleanup also happens when startup or
+        the serving phase raised."""
         app.state.draining = True
         for name in ("dispatcher", "pruner", "context_sweeper"):
             bg = getattr(app.state, name, None)

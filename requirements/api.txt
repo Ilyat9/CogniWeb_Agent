@@ -2,6 +2,13 @@
 # Optional [api] extra: service mode (MODE=api). NOT part of base
 # requirements.txt - CLI users do not need FastAPI/uvicorn.
 -r base.txt
+# Version policy (same category as the openai<4.0.0 pin): dependency minor
+# bumps can silently shift semantics, so bounds are explicit and the tested
+# combination is recorded: fastapi 0.141.1 / starlette 1.6.0. src/api/app.py
+# uses the MODERN lifespan context manager (not the deprecated on_event
+# hooks), so startup ordering is guaranteed by contract regardless of how
+# the legacy hook path evolves. When widening these bounds, re-run the
+# persistence restart tests in tests/test_task_store.py.
 fastapi>=0.110.0,<1.0.0
 uvicorn>=0.27.0,<1.0.0
 
