@@ -141,6 +141,8 @@ docker run --rm -v $(pwd)/.env:/app/.env:ro cogniweb-agent
 │   ├── infrastructure/          # browser.py (Playwright), llm.py
 │   └── utils/dom.py             # Извлечение и оптимизация DOM
 ├── requirements/                # base / dev / api / ui / tools + lock
+├── scripts/
+│   └── diagnostics/             # standalone diagnostic tools (см. ниже)
 ├── tests/                       # Unit- и smoke-тесты
 ├── docs/                        # QUICK_START, ARCHITECTURE, DEPLOYMENT, MONITORING, LOCAL_MODELS
 ├── .env.example                 # Шаблон конфигурации
@@ -309,6 +311,17 @@ make type-check      # проверка типов
 make security-check  # безопасность
 make ci              # эмуляция CI локально
 ```
+
+### Диагностические утилиты
+
+`scripts/diagnostics/` — автономные инструменты, не покрытые линтером и тестами намеренно.
+
+- **`uvicorn_startup_probe.py`** — проверяет под реальным uvicorn (не TestClient), что startup-фаза приложения (гидрация SQLite-хранилища задач) завершается до открытия порта и первого запроса. Запускать после обновлений fastapi/starlette/uvicorn — от этого зависит гарантия «история задач переживает рестарт»:
+
+  ```bash
+  python scripts/diagnostics/uvicorn_startup_probe.py [port]
+  # VERDICT PASS = гидрация завершена до того, как порт принял первый запрос
+  ```
 
 ## Лицензия
 

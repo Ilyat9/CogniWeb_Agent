@@ -1,4 +1,4 @@
-"""One-off probe: does a REAL uvicorn server ever serve a request before
+"""Diagnostic probe: does a REAL uvicorn server ever serve a request before
 the app's startup phase (SQLite hydration) has completed?
 
 Method: start uvicorn programmatically with the production-shaped app from
@@ -7,9 +7,24 @@ instant the port accepts a connection. If uvicorn only opens the port after
 startup handlers complete, the first request must already observe hydrated
 state - regardless of legacy on_event vs lifespan lifecycle style.
 
-Run twice for comparison:
-    python _uvicorn_startup_probe.py            # current code (lifespan)
-    git checkout HEAD~1 -- src/api/app.py && python _uvicorn_startup_probe.py
+When to use: after upgrading fastapi/starlette/uvicorn, to re-verify that
+startup handlers still complete before the serving socket is bound (the
+persistence feature "task history survives restart" depends on it).
+Last verified 2026-08: PASS on both lifecycle styles with uvicorn 0.52.4 /
+starlette 1.6.0 / fastapi 0.141.1 - see commit history and the create_app
+docstring in src/api/app.py.
+
+Usage from the repo root:
+    python scripts/diagnostics/uvicorn_startup_probe.py [port]
+
+To compare against the legacy on_event implementation:
+    git checkout HEAD~1 -- src/api/app.py
+    python scripts/diagnostics/uvicorn_startup_probe.py
+    git checkout HEAD -- src/api/app.py
+
+NOTE: intentionally NOT linted by CI (ruff/black/isort run on src/ tests/
+only; scripts/diagnostics/ is explicitly excluded in pyproject.toml) -
+this is a standalone diagnostic, not production or test code.
 """
 import asyncio
 import logging
@@ -22,7 +37,7 @@ from pathlib import Path
 
 import uvicorn
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.api.app import create_app  # noqa: E402
 from src.api.task_store import TaskStore  # noqa: E402
@@ -138,9 +153,8 @@ async def main() -> None:
 
     # Post-run evidence straight from the source of truth.
     hydrated_in_memory = "zombie" in app.state.tasks
-    print(f"RESULT app.state.tasks after run: "
-          f"{{k: v['state'] for k, v in app.state.tasks.items()}} = "
-          f"{ {k: v['state'] for k, v in app.state.tasks.items()} }")
+    final_states = {k: v["state"] for k, v in app.state.tasks.items()}
+    print(f"RESULT app.state.tasks after run: {final_states}")
     print(f"VERDICT {'PASS' if status == 200 and hydrated_in_memory else 'FAIL'}")
 
 

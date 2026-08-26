@@ -43,6 +43,10 @@ jobs:
           python -m pip install -r requirements/base.txt
           python -m pip install -r requirements/dev.txt
       
+      # Lint scope is src/ tests/ ONLY. scripts/diagnostics/ holds standalone
+      # diagnostic tools (e.g. uvicorn_startup_probe.py) that are deliberately
+      # outside the code-quality gates - also excluded via pyproject.toml
+      # ([tool.ruff] extend-exclude, black extend-exclude, isort extend_skip).
       - name: Run ruff (fast linter)
         run: ruff check src/ tests/
 

@@ -8,6 +8,9 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  # Standalone diagnostic tools - deliberately outside the code-quality
+  # gates (see scripts/diagnostics/ and the note in ci.yml lint job).
+  | scripts/
 )/
 '''
 
@@ -23,6 +26,9 @@ ensure_newline_before_comments = true
 # ruff's isort rule agreeing on same-module import statements instead of
 # fighting over the "correct" arrangement.
 combine_as_imports = true
+# Standalone diagnostics are explicitly out of lint scope (see black's
+# extend-exclude above and scripts/diagnostics/uvicorn_startup_probe.py).
+extend_skip = ["scripts"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -53,6 +59,10 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Explicit scope note: CI lints `src/ tests/` only; scripts/ holds
+# standalone diagnostic tools that are intentionally outside the
+# code-quality gates (see scripts/diagnostics/ and the ci.yml lint job).
+extend-exclude = ["scripts"]
 
 [tool.ruff.lint]
 select = [
