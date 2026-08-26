@@ -249,29 +249,29 @@ make docker-clean    # очистка
 
 ## Архитектура
 
-```
-┌─────────────────────────────────────┐
-│      main.py (Entry Point)          │
-│  Signal Handling, Orchestration     │
-└──────────────┬──────────────────────┘
-               │
-┌──────────────▼──────────────────────┐
-│     Agent Layer (Orchestration)     │
-│   orchestrator.py - ReAct Loop      │
-└──────────────┬──────────────────────┘
-               │
-       ┌───────┴────────┐
-       │                │
-┌──────▼─────┐   ┌─────▼──────┐
-│Infrastructure│  │   Core     │
-│  browser.py  │  │ models.py  │
-│   llm.py     │  │exceptions │
-└──────────────┘  └────────────┘
-       │                │
-┌──────▼────────────────▼──────────┐
-│     Config Layer (Settings)      │
-│   settings.py - Pydantic Config  │
-└──────────────────────────────────┘
+```mermaid
+flowchart TB
+    Task(["Задача пользователя"]) --> Main["main.py<br/>signal handling, graceful shutdown"]
+    Main --> Loop
+
+    subgraph Loop["ReAct-цикл — orchestrator.py"]
+        direction TB
+        Obs["Observe<br/>DOM страницы, URL, состояние"]
+        Think["Think<br/>LLM выбирает инструмент и аргументы"]
+        Act["Act<br/>выполнение действия"]
+        Obs --> Think --> Act --> Obs
+    end
+
+    Loop -->|"каждый шаг"| Checks{"Проверки"}
+    Checks -->|"зацикливание"| LoopGuard["Smart loop detection<br/>вмешательство вместо падения"]
+    Checks -->|"капча"| Captcha["Human-in-the-loop<br/>circuit breaker"]
+    Checks -->|"сбой"| Snapshot["Скриншот + HTML-дамп"]
+
+    Think -.->|"запрос с rate limiting и retry"| LLM["LLMService<br/>OpenRouter / локальный сервер<br/>JSON recovery"]
+    Act -.->|"инструменты"| Browser["BrowserService<br/>Playwright + stealth<br/>фолбэки клика, вкладки, скачивание"]
+    Act -.->|"наблюдение"| DOM["DOMProcessor<br/>топ-50 элементов, экономия токенов"]
+
+    Act -->|"done"| Result["TaskResult<br/>context_data + отчёт"]
 ```
 
 Подробнее — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
