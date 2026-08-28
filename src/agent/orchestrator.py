@@ -21,6 +21,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from ..config import Settings
@@ -37,6 +38,7 @@ from ..core.models import (
 )
 from ..infrastructure import BrowserService, LLMService
 from ..utils import DOMProcessor
+from .checkpoint import AgentCheckpoint
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,7 @@ class AgentOrchestrator:
         shutdown_check: Callable[[], bool] | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         on_step: Callable[[int, AgentAction, ActionResult], None] | None = None,
+        task_id: str | None = None,
     ):
         """
         Initialize orchestrator with dependencies.
@@ -87,6 +90,11 @@ class AgentOrchestrator:
                 (current_step / last_tool) that GET /task/{id} serves DURING
                 a run. Must be fast and non-blocking (plain in-memory
                 writes only); exceptions are logged and swallowed.
+            task_id: Optional external task identifier (the API's task_id)
+                to stamp onto every checkpoint this orchestrator writes, so
+                GET /tasks/{id} can report checkpoint availability and
+                POST /task/{id}/resume can find the right file. None for
+                CLI-only runs.
         """
         self.settings = settings
         self.browser = browser
@@ -95,6 +103,16 @@ class AgentOrchestrator:
         self._shutdown_check = shutdown_check or (lambda: False)
         self._event_sink = event_sink
         self._on_step = on_step
+        self._task_id = task_id
+
+        # Checkpoint/rollback (generalizes the captcha-only checkpoint):
+        # ordered (step, path) pairs for the checkpoints THIS run has
+        # written, oldest first - used both for rotation (drop the oldest
+        # once len() exceeds checkpoint_rotation_keep) and to find the
+        # step N-2 target for an automatic rollback.
+        self._step_checkpoints: list[tuple[int, Path]] = []
+        self._last_step_error: str | None = None
+        self._auto_rollbacks_used = 0
 
         # State management
         self.conversation_history: list[dict[str, Any]] = []
@@ -373,33 +391,55 @@ class AgentOrchestrator:
             except Exception as e:
                 logger.debug(f"event_sink callback failed (non-fatal): {e}")
 
-    async def _run_impl(self, task: str, starting_url: str | None = None) -> TaskResult:
+    async def _run_impl(
+        self,
+        task: str,
+        starting_url: str | None = None,
+        *,
+        start_time: datetime | None = None,
+        start_step: int = 1,
+        skip_init: bool = False,
+    ) -> TaskResult:
         """
         Execute task using autonomous agent loop.
 
         Args:
             task: Natural language task description
             starting_url: Optional starting URL
+            start_time: Clock origin for total_duration_seconds. Passed by
+                resume() so total duration is measured from the ORIGINAL
+                run, not restarted at zero for the resumed portion. Defaults
+                to now() for a fresh run.
+            start_step: First step number to execute. resume() passes
+                checkpoint.step + 1 so the loop continues past what was
+                already done instead of re-running it or starting at 1.
+            skip_init: When True (resume() path), state was already
+                restored by _restore_from_checkpoint() - conversation
+                history/system prompt must NOT be reset, and starting_url
+                must NOT be re-navigated (the checkpoint's current_url
+                already was).
 
         Returns:
             TaskResult with execution summary
         """
-        start_time = datetime.now()
+        start_time = start_time or datetime.now()
 
-        # Task 3 (context compaction): keep the original task text around
-        # independently of conversation_history, so it survives compaction.
-        self.task = task
+        if not skip_init:
+            # Task 3 (context compaction): keep the original task text
+            # around independently of conversation_history, so it survives
+            # compaction.
+            self.task = task
 
-        # Initialize conversation with system prompt
-        self._initialize_conversation(task)
+            # Initialize conversation with system prompt
+            self._initialize_conversation(task)
 
-        # Navigate to starting URL if provided
-        if starting_url:
-            print(f"🌐 Navigating to: {starting_url}")
-            await self.browser.navigate(starting_url)
+            # Navigate to starting URL if provided
+            if starting_url:
+                print(f"🌐 Navigating to: {starting_url}")
+                await self.browser.navigate(starting_url)
 
         # Main reasoning loop
-        for step in range(1, self.settings.max_steps + 1):
+        for step in range(start_step, self.settings.max_steps + 1):
             # Liveness signal for the CLI-mode docker healthcheck (a hung
             # step loop must be visible to the orchestrator as unhealthy;
             # see settings.heartbeat_file). Best-effort only.
@@ -547,6 +587,46 @@ class AgentOrchestrator:
                         context_data=self.context_data.copy(),
                     )
 
+                # 4b. Human-in-the-loop confirmation gate (opt-in, off by
+                # default - see settings.require_confirmation_for). A tool
+                # named here is never executed inline: a checkpoint carrying
+                # the withheld action is saved and the run returns paused,
+                # to be continued only via resume(checkpoint_path,
+                # confirm=True) once a human has explicitly approved it.
+                if action.tool in self.settings.require_confirmation_for:
+                    current_url = await self.browser.get_current_url()
+                    checkpoint = self._build_checkpoint(
+                        step - 1,
+                        current_url,
+                        starting_url,
+                        pending_action=action.model_dump(),
+                    )
+                    run_tag = self._task_id or self._run_id
+                    checkpoint_path = (
+                        self.settings.checkpoint_dir / f"confirm_{run_tag}_{step}.json"
+                    )
+                    try:
+                        checkpoint.write(checkpoint_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to write confirmation checkpoint: {e}")
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    self._log_step_json(
+                        step, tool=action.tool, success=False, event="awaiting_confirmation"
+                    )
+                    return TaskResult(
+                        success=False,
+                        summary=(
+                            f"Paused before running '{action.tool}': this tool requires "
+                            "explicit confirmation. Resume with confirm=True to execute it "
+                            "and continue."
+                        ),
+                        steps_taken=step - 1,
+                        total_duration_seconds=elapsed,
+                        final_url=current_url,
+                        context_data=self.context_data.copy(),
+                        error="AwaitingConfirmation",
+                    )
+
                 # 5. Execute action
                 # FIX (2.3 Critical, defense-in-depth): args: Dict[str, Any]
                 # only validates presence of keys, not value types. E.g.
@@ -574,6 +654,44 @@ class AgentOrchestrator:
                         error="InternalExecutionError",
                     )
                 action_latency_ms = int((time.time() - action_start) * 1000)
+
+                # 5b. Automatic rollback: a NARROW, bounded case - not a
+                # general "retry on any error". Only fires when a tool
+                # fails with the exact same error type on two consecutive
+                # steps, meaning the agent is hammering the same failing
+                # action instead of adapting. Restores the checkpoint from
+                # step N-2 (state right before the previous attempt) and
+                # lets the LLM reason again from there with a fresh
+                # observation, instead of piling a 3rd identical failure
+                # into the conversation. Bounded by max_auto_rollbacks per
+                # run so a persistently broken page still ends in a
+                # reported failure rather than an endless restore loop.
+                if (
+                    not result.success
+                    and result.error
+                    and result.error == self._last_step_error
+                    and self._auto_rollbacks_used < self.settings.max_auto_rollbacks
+                ):
+                    target = self._checkpoint_for_step(step - 2)
+                    if target is not None:
+                        self._auto_rollbacks_used += 1
+                        print(
+                            f"↩️  Auto-rollback {self._auto_rollbacks_used}/"
+                            f"{self.settings.max_auto_rollbacks}: repeated '{result.error}' "
+                            f"error, restoring checkpoint from step {target.step}"
+                        )
+                        await self._restore_from_checkpoint(target)
+                        self._log_step_json(
+                            step,
+                            tool=action.tool,
+                            success=False,
+                            error=result.error,
+                            event="auto_rollback",
+                            rollback_to_step=target.step,
+                        )
+                        self._last_step_error = None
+                        continue
+                self._last_step_error = result.error
 
                 # 6. Add action and result to conversation
                 # Hardening supplement (prompt injection): tools whose
@@ -623,6 +741,7 @@ class AgentOrchestrator:
                 screenshot_path = None
                 if action.tool == "take_screenshot" and isinstance(result.data, dict):
                     screenshot_path = result.data.get("path")
+                current_url = await self.browser.get_current_url()
                 self._log_step_json(
                     step,
                     tool=action.tool,
@@ -636,8 +755,14 @@ class AgentOrchestrator:
                     error=result.error,
                     warning=result.warning,
                     screenshot_path=screenshot_path,
-                    url=await self.browser.get_current_url(),
+                    url=current_url,
                 )
+
+                # Checkpoint/rollback: generalizes the captcha-only
+                # checkpoint (_save_captcha_checkpoint) to every step, not
+                # just captcha waits - see _save_checkpoint().
+                self._save_checkpoint(step, current_url, starting_url)
+
                 if self.settings.agent_step_delay > 0:
                     delay = random.uniform(
                         self.settings.agent_step_delay * 0.5, self.settings.agent_step_delay * 1.5
@@ -952,6 +1077,176 @@ class AgentOrchestrator:
             _Path(checkpoint_path).unlink(missing_ok=True)
         except Exception as e:
             logger.debug(f"Could not remove captcha checkpoint (non-fatal): {e}")
+
+    # ========================================================================
+    # Checkpoint / resume / rollback
+    #
+    # Generalizes the captcha-only checkpoint above (_save_captcha_checkpoint)
+    # to every step of the main loop, using the same underlying idea (persist
+    # task/step/url/context_data/conversation_history) via the shared
+    # AgentCheckpoint model instead of a one-off dict. The captcha path is
+    # kept as-is on purpose: it is the one case where a checkpoint exists so
+    # a HUMAN can intervene and must survive until they do, not until the
+    # next rotation sweep.
+    # ========================================================================
+
+    def _build_checkpoint(
+        self,
+        step: int,
+        current_url: str | None,
+        starting_url: str | None,
+        pending_action: dict[str, Any] | None = None,
+    ) -> AgentCheckpoint:
+        return AgentCheckpoint(
+            task_id=self._task_id,
+            task=self.task,
+            step=step,
+            current_url=current_url,
+            starting_url=starting_url,
+            context_data=self.context_data,
+            conversation_history=self.conversation_history,
+            pending_action=pending_action,
+        )
+
+    def _save_checkpoint(
+        self, step: int, current_url: str | None, starting_url: str | None
+    ) -> Path:
+        """Persist an AgentCheckpoint for `step` and rotate: keep only the
+        last `settings.checkpoint_rotation_keep` step checkpoints for this
+        run so a long task does not grow checkpoint_dir without bound.
+
+        Writing a small JSON file to local disk is fast relative to a step's
+        LLM-call + browser-action budget, so this stays a plain synchronous
+        write (like the pre-existing captcha checkpoint) rather than adding
+        fire-and-forget task scheduling for a negligible cost."""
+        checkpoint = self._build_checkpoint(step, current_url, starting_url)
+        run_tag = self._task_id or self._run_id
+        path = self.settings.checkpoint_dir / f"step_{run_tag}_{step}.json"
+        try:
+            checkpoint.write(path)
+        except Exception as e:
+            logger.warning(f"Failed to write step checkpoint: {e}")
+            return path
+
+        self._step_checkpoints.append((step, path))
+        keep = self.settings.checkpoint_rotation_keep
+        while len(self._step_checkpoints) > keep:
+            old_step, old_path = self._step_checkpoints.pop(0)
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug(f"Could not remove rotated checkpoint step {old_step}: {e}")
+        return path
+
+    def _checkpoint_for_step(self, target_step: int) -> AgentCheckpoint | None:
+        """Load the checkpoint written for `target_step`, if it is still on
+        disk (rotation or a too-early target may have already dropped it)."""
+        if target_step < 1:
+            return None
+        for step, path in self._step_checkpoints:
+            if step == target_step:
+                try:
+                    return AgentCheckpoint.read(path)
+                except Exception as e:
+                    logger.warning(f"Could not read checkpoint for step {target_step}: {e}")
+                    return None
+        return None
+
+    async def _restore_from_checkpoint(self, checkpoint: AgentCheckpoint) -> None:
+        """Restore in-process state AND the browser's actual page from a
+        checkpoint. Restoring only conversation_history/context_data would
+        leave the browser on whatever page it was last at, desynchronized
+        from what the model believes it is looking at - so this always
+        re-navigates when a URL was recorded."""
+        self.task = checkpoint.task
+        self.context_data = dict(checkpoint.context_data)
+        self.conversation_history = list(checkpoint.conversation_history)
+        if checkpoint.current_url:
+            await self.browser.navigate(checkpoint.current_url)
+
+    async def resume(self, checkpoint_path: str, confirm: bool = False) -> TaskResult:
+        """
+        Resume a run from a checkpoint file, continuing the main loop at
+        checkpoint.step + 1 (never from scratch, never re-running the step
+        that was already completed).
+
+        If the checkpoint carries a `pending_action` (a human-in-the-loop
+        confirmation pause, see settings.require_confirmation_for), it is
+        only executed when `confirm=True`; otherwise resume() returns
+        immediately with error="AwaitingConfirmation" so the caller can
+        surface that decision to a human before any side-effecting action
+        runs.
+        """
+        checkpoint = AgentCheckpoint.read(Path(checkpoint_path))
+        start_time = datetime.now()
+        await self._restore_from_checkpoint(checkpoint)
+        self._emit_event(
+            type="started",
+            run_id=self._run_id,
+            task=checkpoint.task,
+            event="resumed",
+            resumed_from_step=checkpoint.step,
+        )
+
+        next_step = checkpoint.step + 1
+
+        if checkpoint.pending_action is not None:
+            if not confirm:
+                elapsed = (datetime.now() - start_time).total_seconds()
+                result = TaskResult(
+                    success=False,
+                    summary=(
+                        f"Resume paused: tool '{checkpoint.pending_action.get('tool')}' "
+                        "is still awaiting confirmation. Call resume(confirm=True) to "
+                        "execute it and continue."
+                    ),
+                    steps_taken=checkpoint.step,
+                    total_duration_seconds=elapsed,
+                    final_url=checkpoint.current_url,
+                    context_data=self.context_data.copy(),
+                    error="AwaitingConfirmation",
+                )
+                self._write_run_report(checkpoint.task, result)
+                return result
+
+            action = AgentAction.model_validate(checkpoint.pending_action)
+            try:
+                result = await self._execute_action(action)
+            except Exception as e:
+                logger.error(f"Unhandled exception executing confirmed action: {e}", exc_info=True)
+                result = ActionResult(
+                    success=False,
+                    message=f"Internal error executing confirmed '{action.tool}': {e}",
+                    error="InternalExecutionError",
+                )
+            self.conversation_history.append(
+                {"role": "assistant", "content": self._format_action_result(action, result)}
+            )
+            self._log_step_json(
+                next_step,
+                tool=action.tool,
+                success=result.success,
+                message=result.message,
+                error=result.error,
+                event="confirmed_action_executed",
+            )
+            next_step += 1
+
+        result = await self._run_impl(
+            checkpoint.task,
+            starting_url=checkpoint.starting_url,
+            start_time=start_time,
+            start_step=next_step,
+            skip_init=True,
+        )
+        self._write_run_report(checkpoint.task, result)
+        self._emit_event(
+            type="final",
+            run_id=self._run_id,
+            result=result.model_dump(),
+            report_path=str(self.settings.reports_dir / f"run_{self._run_id}.json"),
+        )
+        return result
 
     def _open_file_nonblocking(self, path) -> None:
         """
