@@ -41,6 +41,18 @@ class TaskSubmission(BaseModel):
         return v
 
 
+class ResumeRequest(BaseModel):
+    """Body for POST /task/{task_id}/resume - resumes the most recent
+    on-disk checkpoint for that task instead of starting over."""
+
+    confirm: bool = Field(
+        default=False,
+        description="Set True to execute a pending human-in-the-loop "
+        "confirmation action (settings.require_confirmation_for) and "
+        "continue; False just reports whether one is pending.",
+    )
+
+
 class TaskStatus(BaseModel):
     task_id: str
     state: str  # queued | running | finished

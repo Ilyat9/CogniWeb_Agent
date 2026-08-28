@@ -77,6 +77,7 @@ from ..infrastructure.usage import UsageTracker
 from .models import (  # noqa: F401 - re-export
     _SAFE_TENANT_ID,
     DEFAULT_TENANT_ID,
+    ResumeRequest,
     TaskStatus,
     TaskSubmission,
 )
@@ -96,7 +97,11 @@ LifecycleHook = Callable[[], Awaitable[None]]
 #               current_step/last_tool from it (in-memory writes only)
 #   tenant_id:  str - multi-tenancy: which tenant's browser context to run
 #               this task on (runners that ignore it never see it)
-_RUNNER_OPTIONAL_KWARGS = ("emit", "stop_check", "on_step", "tenant_id")
+#   task_id:    str - checkpoint/resume: stamped onto every checkpoint the
+#               orchestrator writes for this task (see AgentOrchestrator's
+#               task_id constructor arg), so POST /task/{id}/resume can
+#               find it again (runners that ignore it never see it)
+_RUNNER_OPTIONAL_KWARGS = ("emit", "stop_check", "on_step", "tenant_id", "task_id")
 
 # Multi-tenancy: tenant_id is an IDENTIFIER, not an identity claim; its
 # validation regex lives in src/api/models.py (_SAFE_TENANT_ID).
@@ -184,6 +189,7 @@ def create_app(
     on_shutdown: LifecycleHook | None = None,
     context_pool: Any | None = None,
     health_providers: dict[str, Callable[[], Awaitable[bool]]] | None = None,
+    task_resumer: TaskRunner | None = None,
 ) -> FastAPI:
     """Build the API app with an injected task runner (async callable
     (task, starting_url) -> TaskResult; may additionally accept keyword
@@ -235,6 +241,11 @@ def create_app(
     # settings carry a task_db_path and aiosqlite is importable. None =
     # legacy pure in-memory mode (tests / missing optional dependency).
     app.state.task_store: Any | None = None
+    # Checkpoint/resume: async callable (checkpoint_path, confirm, **kwargs)
+    # -> TaskResult, mirroring task_runner's optional-kwargs contract (see
+    # _RUNNER_OPTIONAL_KWARGS / _runner_kwargs). None (injected-runner tests
+    # that don't wire it) makes POST /task/{id}/resume answer 501.
+    app.state.task_resumer = task_resumer
     # Multi-tenancy dispatch state (replaces the single asyncio.Queue):
     # - tenant_queues: FIFO of task_ids PER TENANT
     # - queue_order: tenants that currently have queued work, kept in
@@ -325,7 +336,32 @@ def create_app(
             kwargs["on_step"] = record["on_step"]
         if "tenant_id" in params:
             kwargs["tenant_id"] = record.get("tenant_id", DEFAULT_TENANT_ID)
+        if "task_id" in params:
+            kwargs["task_id"] = record["task_id"]
         return kwargs
+
+    def _latest_checkpoint_for_task(task_id: str) -> Path | None:
+        """Find the most recent on-disk checkpoint written for this task_id
+        by AgentOrchestrator (see _save_checkpoint / require_confirmation_for
+        - both stamp task_id into the filename). Prefers a pending
+        confirmation checkpoint (it always reflects the newest paused
+        state) over the newest step checkpoint."""
+        checkpoint_dir = getattr(settings, "checkpoint_dir", None) if settings else None
+        if not checkpoint_dir:
+            return None
+        checkpoint_dir = Path(checkpoint_dir)
+        confirm_matches = sorted(checkpoint_dir.glob(f"confirm_{task_id}_*.json"))
+        if confirm_matches:
+            return confirm_matches[-1]
+
+        def _step_of(path: Path) -> int:
+            try:
+                return int(path.stem.rsplit("_", 1)[-1])
+            except ValueError:
+                return -1
+
+        step_matches = sorted(checkpoint_dir.glob(f"step_{task_id}_*.json"), key=_step_of)
+        return step_matches[-1] if step_matches else None
 
     def _publish(record: dict[str, Any], event: dict[str, Any]) -> None:
         """Append an event to the task's history and fan it out to every
@@ -912,6 +948,70 @@ def create_app(
         await _persist_now(record)
         return {"task_id": task_id, "state": record["state"], "stop_requested": True}
 
+    @app.post("/task/{task_id}/resume", dependencies=protected)
+    async def resume_task(
+        task_id: str, body: ResumeRequest, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> dict:
+        """Checkpoint/resume: continue task_id from its most recent on-disk
+        checkpoint (a per-step checkpoint, or a paused human-in-the-loop
+        confirmation - see settings.require_confirmation_for) instead of
+        starting the task over. Reuses the SAME task record / event-publish
+        / persistence path a fresh run uses (_runner_kwargs, _publish,
+        _persist_now) rather than a separate resume-specific mechanism."""
+        record = _resolve_tenant_record(task_id, tenant_id)
+        if record["state"] == "running":
+            raise HTTPException(status_code=409, detail="task is already running")
+        resumer = app.state.task_resumer
+        if resumer is None:
+            raise HTTPException(
+                status_code=501, detail="resume is not configured on this deployment"
+            )
+        checkpoint_path = _latest_checkpoint_for_task(task_id)
+        if checkpoint_path is None:
+            raise HTTPException(status_code=404, detail="no checkpoint available for this task")
+
+        record["state"] = "running"
+        record["stop_requested"] = False
+        await _persist_now(record)
+        _metrics.observe_task_running(record.get("tenant_id", DEFAULT_TENANT_ID))
+        kwargs = _runner_kwargs(record)
+        if "confirm" in inspect.signature(resumer).parameters:
+            kwargs["confirm"] = body.confirm
+        try:
+            result = await resumer(str(checkpoint_path), **kwargs)
+            record["result"] = result.model_dump()
+        except Exception as e:
+            logger.exception("Task %s resume crashed", task_id)
+            record["result"] = TaskResult(
+                success=False,
+                summary=f"Resume crashed: {e}",
+                steps_taken=0,
+                total_duration_seconds=0.0,
+                error=type(e).__name__,
+            ).model_dump()
+        finally:
+            app.state.usage.record_completion(
+                record.get("tenant_id", DEFAULT_TENANT_ID),
+                (record.get("result") or {}).get("tokens_used"),
+            )
+            _metrics.observe_task_finished(
+                record.get("tenant_id", DEFAULT_TENANT_ID),
+                bool((record.get("result") or {}).get("success")),
+                float((record.get("result") or {}).get("total_duration_seconds") or 0.0),
+            )
+            record["state"] = "finished"
+            await _persist_now(record)
+            _publish(
+                record,
+                {
+                    "type": "final",
+                    "task_id": task_id,
+                    "state": "finished",
+                    "result": record["result"],
+                },
+            )
+        return {"task_id": task_id, "state": record["state"], "result": record["result"]}
+
     @app.post("/ws/ticket", dependencies=protected)
     async def issue_ws_ticket() -> dict:
         """Hardening (WS auth): exchange the Bearer token for a one-time,
@@ -1179,6 +1279,7 @@ def build_default_app() -> FastAPI:
         stop_check: Callable[[], bool] | None = None,
         on_step: Callable[[int, Any, Any], None] | None = None,
         tenant_id: str = "default",
+        task_id: str | None = None,
     ) -> TaskResult:
         # Exclusive checkout of the tenant's persistent context; the
         # orchestrator gets a lightweight per-page view (own element_map),
@@ -1197,10 +1298,47 @@ def build_default_app() -> FastAPI:
                     or bool(stop_check and stop_check()),
                     event_sink=emit,
                     on_step=on_step,
+                    task_id=task_id,
                 )
                 return await orchestrator.run(task, starting_url=starting_url)
             finally:
                 # Close ONLY this task's page - the tenant context stays up.
+                try:
+                    await page_view.page.close()
+                except Exception as e:
+                    logger.debug(f"Per-task page close failed (non-fatal): {e}")
+        finally:
+            pool.release(tenant_id)
+
+    async def _resume_task(
+        checkpoint_path: str,
+        confirm: bool = False,
+        emit: Callable[[dict], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        on_step: Callable[[int, Any, Any], None] | None = None,
+        tenant_id: str = "default",
+        task_id: str | None = None,
+    ) -> TaskResult:
+        """Checkpoint/resume counterpart to _run_task: same tenant-context
+        checkout, but continues an existing checkpoint via
+        AgentOrchestrator.resume() instead of starting orchestrator.run()
+        from scratch."""
+        service = await pool.acquire(tenant_id)
+        try:
+            page_view = await service.new_page()
+            try:
+                orchestrator = AgentOrchestrator(
+                    settings,
+                    page_view,
+                    llm,
+                    shutdown_check=lambda: shutdown_requested["flag"]
+                    or bool(stop_check and stop_check()),
+                    event_sink=emit,
+                    on_step=on_step,
+                    task_id=task_id,
+                )
+                return await orchestrator.resume(checkpoint_path, confirm=confirm)
+            finally:
                 try:
                     await page_view.page.close()
                 except Exception as e:
@@ -1218,4 +1356,5 @@ def build_default_app() -> FastAPI:
         # cached by the app). Browser engine status comes from the pool
         # itself; store status from app.state.task_store.
         health_providers={"llm": llm.health_check},
+        task_resumer=_resume_task,
     )
