@@ -1152,6 +1152,37 @@ class Settings(BaseSettings):
         description="Directory for captcha human-in-the-loop checkpoints",
     )
 
+    # Checkpoint/rollback: generalizes the captcha-only checkpoint above to
+    # every step of the main loop (see AgentOrchestrator._save_checkpoint /
+    # .resume()). Kept separate from checkpoint_dir's original captcha
+    # comment on purpose - captcha checkpoints still bypass rotation (a
+    # human may be away for a while) while per-step checkpoints rotate.
+    checkpoint_rotation_keep: int = Field(
+        default=3,
+        ge=1,
+        alias="CHECKPOINT_ROTATION_KEEP",
+        description="Per-task step checkpoints to keep on disk; older ones "
+        "are deleted as new ones are written so long runs don't grow "
+        "checkpoint_dir without bound.",
+    )
+
+    max_auto_rollbacks: int = Field(
+        default=2,
+        ge=0,
+        alias="MAX_AUTO_ROLLBACKS",
+        description="Max automatic rollbacks-to-checkpoint per run, "
+        "triggered when a tool fails with the same error type on two "
+        "consecutive steps. 0 disables automatic rollback entirely.",
+    )
+
+    require_confirmation_for: list[str] = Field(
+        default_factory=list,
+        alias="REQUIRE_CONFIRMATION_FOR",
+        description="Tool names (e.g. 'submit_form') that pause the run "
+        "for external confirmation instead of executing immediately. "
+        "Empty by default - most tasks should not stop mid-run.",
+    )
+
     # Liveness heartbeat for docker-healthcheck.py in CLI (batch) mode.
     # The orchestrator touches this file once per reasoning step; the
     # healthcheck flags the container unhealthy when the file exists but
