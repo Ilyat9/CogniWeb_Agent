@@ -468,6 +468,7 @@ class AgentOrchestrator:
                 # settings.model_supports_vision) and self-healing (falls
                 # back to the normal text path if the vision call itself
                 # fails for any reason).
+                llm_start = time.time()
                 if self._should_use_vision_fallback():
                     print(
                         "👁️  Text-based DOM extraction looked unreliable - trying vision fallback..."
@@ -492,6 +493,7 @@ class AgentOrchestrator:
                     action = await self._call_llm_with_rate_limit(
                         messages=self.get_trimmed_history(), temperature=self.settings.temperature
                     )
+                llm_latency_ms = int((time.time() - llm_start) * 1000)
 
                 print(f"💭 Thought: {action.thought}")
                 print(f"🔧 Tool: {action.tool}")
@@ -558,6 +560,7 @@ class AgentOrchestrator:
                 # but this catch-all stays as a second line of defense
                 # against any other tool handler that might misbehave the
                 # same way in the future.
+                action_start = time.time()
                 try:
                     result = await self._execute_action(action)
                 except Exception as e:
@@ -570,6 +573,7 @@ class AgentOrchestrator:
                         message=f"Internal error executing '{action.tool}': {e}",
                         error="InternalExecutionError",
                     )
+                action_latency_ms = int((time.time() - action_start) * 1000)
 
                 # 6. Add action and result to conversation
                 # Hardening supplement (prompt injection): tools whose
@@ -624,6 +628,8 @@ class AgentOrchestrator:
                     tool=action.tool,
                     success=result.success,
                     duration_ms=int((time.time() - step_start) * 1000),
+                    llm_latency_ms=llm_latency_ms,
+                    action_latency_ms=action_latency_ms,
                     thought=action.thought,
                     args=action.args,
                     message=result.message,
