@@ -224,12 +224,8 @@ def observe_http_request(
     if not AVAILABLE:
         return
     try:
-        HTTP_REQUESTS.labels(
-            method=method, path_template=path_template, status=str(status)
-        ).inc()
-        HTTP_DURATION.labels(method=method, path_template=path_template).observe(
-            duration_seconds
-        )
+        HTTP_REQUESTS.labels(method=method, path_template=path_template, status=str(status)).inc()
+        HTTP_DURATION.labels(method=method, path_template=path_template).observe(duration_seconds)
     except Exception:  # noqa: BLE001
         logger.debug("metrics.observe_http_request failed", exc_info=True)
 
@@ -298,9 +294,7 @@ def observe_task_finished(
         if not AVAILABLE:
             return
         try:
-            TASK_STEPS.labels(outcome="success" if success else "failure").observe(
-                steps_taken
-            )
+            TASK_STEPS.labels(outcome="success" if success else "failure").observe(steps_taken)
         except Exception:  # noqa: BLE001
             logger.debug("metrics.observe_task_finished(steps) failed", exc_info=True)
 

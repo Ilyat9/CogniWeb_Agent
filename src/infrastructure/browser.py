@@ -68,6 +68,7 @@ def _browser_error_type(exc: BaseException) -> str:
         return "timeout"
     return "other"
 
+
 # Task 4 (stealth mode): playwright-stealth is an OPTIONAL extra
 # (requirements-tools.txt), imported lazily exactly once per run - same
 # pattern as tiktoken. If the package is unavailable we log one warning

@@ -290,14 +290,12 @@ class TestRuntimeMetrics:
     def test_http_requests_counted_with_path_template(self, tmp_path):
         client = _client(tmp_path)
         try:
-            labels = dict(method="GET", path_template="/tasks", status="200")
+            labels = {"method": "GET", "path_template": "/tasks", "status": "200"}
             before = _metrics.HTTP_REQUESTS.labels(**labels)._value.get()
             assert client.get("/tasks").status_code == 200
             assert _metrics.HTTP_REQUESTS.labels(**labels)._value.get() == before + 1
             assert (
-                _metrics.HTTP_DURATION.labels(
-                    method="GET", path_template="/tasks"
-                )._sum.get()
+                _metrics.HTTP_DURATION.labels(method="GET", path_template="/tasks")._sum.get()
                 >= 0.0
             )
         finally:
@@ -397,7 +395,7 @@ class TestRuntimeMetrics:
         from unittest.mock import AsyncMock, MagicMock
 
         from src.agent.orchestrator import AgentOrchestrator
-        from src.core.models import AgentAction, ActionResult
+        from src.core.models import ActionResult, AgentAction
 
         browser = MagicMock()
         browser.element_map = {}
@@ -416,9 +414,10 @@ class TestRuntimeMetrics:
             _metrics.TOOL_CALLS.labels(tool="navigate", outcome="success")._value.get()
             == before + 1
         )
-        assert _exposition_value(
-            "cogniweb_tool_duration_seconds_count", {"tool": "navigate"}
-        ) == duration_before + 1
+        assert (
+            _exposition_value("cogniweb_tool_duration_seconds_count", {"tool": "navigate"})
+            == duration_before + 1
+        )
 
     async def test_execute_action_records_failure_outcome(self, tmp_path):
         from unittest.mock import MagicMock

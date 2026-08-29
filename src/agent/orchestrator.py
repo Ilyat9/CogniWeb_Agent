@@ -36,8 +36,7 @@ from ..core.models import (
     AgentAction,
     TaskResult,
 )
-from ..infrastructure import BrowserService, LLMService
-from ..infrastructure import metrics as _metrics
+from ..infrastructure import BrowserService, LLMService, metrics as _metrics
 from ..utils import DOMProcessor
 from .checkpoint import AgentCheckpoint
 
@@ -2546,9 +2545,7 @@ Always think step-by-step and explain your reasoning."""
         # Single exit point: record latency + outcome exactly once per
         # dispatch (never inside individual branches). observe_* swallows
         # its own exceptions - metrics cannot break a tool run.
-        _metrics.observe_tool_call(
-            tool, bool(result.success), time.monotonic() - dispatch_started
-        )
+        _metrics.observe_tool_call(tool, bool(result.success), time.monotonic() - dispatch_started)
         return result
 
     def _get_invalid_element_error(self, element_id: int) -> ActionResult:
