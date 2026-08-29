@@ -64,6 +64,24 @@ logger = logging.getLogger(__name__)
 _FAILOVER_COOLDOWN_SECONDS = 30.0
 
 
+def _observe_retry_before_sleep(retry_state: Any) -> None:
+    """tenacity before_sleep hook: count one transport-level retry.
+
+    Observability for the TRANSPORT retry layer only (see module docstring):
+    each exponential-backoff sleep before a re-attempt increments
+    cogniweb_llm_retries_total{provider}. `provider` is the ACTIVE provider
+    mode ('cloud' | 'local') - a closed settings value, NOT the model name
+    string. Bound instance arrives as the first positional arg because
+    generate_action/generate_text are called as bound methods; the hook
+    must never raise (metrics failures are logged at debug, swallowed)."""
+    try:
+        instance = retry_state.args[0] if retry_state.args else None
+        provider = str(getattr(instance, "active_provider_mode", "unknown") or "unknown")
+        _metrics.observe_llm_retry(provider)
+    except Exception:  # noqa: BLE001 - observability must never crash the app
+        logger.debug("metrics retry hook failed", exc_info=True)
+
+
 class LLMRateLimiter:
     """
     Shared request pacer: one clock + one lock per LLM client.
@@ -273,6 +291,10 @@ class LLMService:
                 api_key=api_key, base_url=base_url, http_client=self._fallback_http_client
             )
         self._fallback_active = True
+        # Observability: count only ACTUAL switches (not failed health
+        # checks / cooldown skips above) - the dashboard signal is "how
+        # often did we leave the primary provider".
+        _metrics.observe_llm_failover()
         logger.warning(
             "Primary LLM provider unavailable (%s) - FAILED OVER to fallback: "
             "mode=%s base=%s model=%s (pacing now follows the fallback's "
@@ -389,6 +411,7 @@ class LLMService:
         # split). LLMError must stay non-retryable HERE - JSON-parse
         # recovery is the orchestrator's job.
         retry=retry_if_exception_type((NetworkError, httpx.TimeoutException)),
+        before_sleep=_observe_retry_before_sleep,
     )
     async def generate_action(
         self, messages: list[dict[str, Any]], temperature: float = 0.1
@@ -460,6 +483,7 @@ class LLMService:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((NetworkError, httpx.TimeoutException)),
+        before_sleep=_observe_retry_before_sleep,
     )
     async def generate_text(self, messages: list[dict[str, Any]], temperature: float = 0.1) -> str:
         """

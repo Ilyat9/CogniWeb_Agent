@@ -55,6 +55,19 @@ from . import metrics as _metrics
 # fallback used" were therefore invisible in the log file.
 logger = logging.getLogger(__name__)
 
+
+def _browser_error_type(exc: BaseException) -> str:
+    """Classify a browser-layer exception into a CLOSED label set for
+    cogniweb_browser_action_errors_total{error_type} (currently
+    'timeout' | 'other'). Raw exception text must NEVER become a label
+    value - it is unbounded user/site-controlled content (cardinality)."""
+    if isinstance(exc, (PlaywrightTimeoutError, TimeoutError)):
+        return "timeout"
+    lowered = str(exc).lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    return "other"
+
 # Task 4 (stealth mode): playwright-stealth is an OPTIONAL extra
 # (requirements-tools.txt), imported lazily exactly once per run - same
 # pattern as tiktoken. If the package is unavailable we log one warning
@@ -782,6 +795,7 @@ class BrowserService:
 
             except Exception as e:
                 await self._capture_error_snapshot("navigation_error")
+                _metrics.observe_browser_action_error("navigate", _browser_error_type(e))
                 return ActionResult(success=False, message=f"Navigation failed: {e}", error=str(e))
 
     async def _check_element_safety(self, selector: str) -> str | None:
@@ -1047,6 +1061,9 @@ class BrowserService:
                 if attempt < max_retries - 1:
                     continue
                 await self._capture_error_snapshot("click_error")
+                # Count only the FINAL reported failure, not each retry
+                # attempt (the retry loop is visible via durations).
+                _metrics.observe_browser_action_error("click_element", _browser_error_type(e))
                 return ActionResult(success=False, message=f"Click failed: {e}", error=str(e))
 
         await self._capture_error_snapshot("click_error")
@@ -1149,6 +1166,7 @@ class BrowserService:
 
         except Exception as e:
             await self._capture_error_snapshot("type_error")
+            _metrics.observe_browser_action_error("type_text", _browser_error_type(e))
             return ActionResult(success=False, message=f"Typing failed: {e}", error=str(e))
 
     async def select_option(self, element_id: int, value: str) -> ActionResult:
@@ -1201,6 +1219,7 @@ class BrowserService:
 
         except Exception as e:
             await self._capture_error_snapshot("select_error")
+            _metrics.observe_browser_action_error("select_option", _browser_error_type(e))
             return ActionResult(success=False, message=f"Select failed: {e}", error=str(e))
 
     async def upload_file(self, element_id: int, file_path: str) -> ActionResult:
@@ -1278,6 +1297,7 @@ class BrowserService:
 
         except Exception as e:
             await self._capture_error_snapshot("upload_error")
+            _metrics.observe_browser_action_error("upload_file", _browser_error_type(e))
             return ActionResult(success=False, message=f"Upload failed: {e}", error=str(e))
 
     async def capture_annotated_screenshot(self, elements: list[dict]) -> bytes:
@@ -1435,6 +1455,7 @@ class BrowserService:
                 error="WaitForElementTimeout",
             )
         except Exception as e:
+            _metrics.observe_browser_action_error("wait_for_element", _browser_error_type(e))
             return ActionResult(
                 success=False, message=f"wait_for_element failed: {e}", error=str(e)
             )
@@ -1470,6 +1491,7 @@ class BrowserService:
             return ActionResult(success=True, message=f"Hovered element {element_id}")
         except Exception as e:
             await self._capture_error_snapshot("hover_error")
+            _metrics.observe_browser_action_error("hover_element", _browser_error_type(e))
             return ActionResult(success=False, message=f"Hover failed: {e}", error=str(e))
 
     async def press_key(self, key: str) -> ActionResult:
@@ -1489,6 +1511,7 @@ class BrowserService:
             await self.page.keyboard.press(key.strip())
             return ActionResult(success=True, message=f"Pressed key: {key.strip()}")
         except Exception as e:
+            _metrics.observe_browser_action_error("press_key", _browser_error_type(e))
             return ActionResult(success=False, message=f"press_key failed: {e}", error=str(e))
 
     async def extract_tables(self, selector: str = "table") -> list[dict]:
@@ -1563,6 +1586,7 @@ class BrowserService:
             await self.page.go_forward(timeout=self.settings.page_load_timeout)
             return ActionResult(success=True, message="Went forward to next page")
         except Exception as e:
+            _metrics.observe_browser_action_error("go_forward", _browser_error_type(e))
             return ActionResult(success=False, message=f"Go forward failed: {e}", error=str(e))
 
     async def download_file(self, element_id: int, timeout_ms: int | None = None) -> ActionResult:
@@ -1608,6 +1632,7 @@ class BrowserService:
             )
         except Exception as e:
             await self._capture_error_snapshot("download_error")
+            _metrics.observe_browser_action_error("download_file", _browser_error_type(e))
             return ActionResult(success=False, message=f"Download failed: {e}", error=str(e))
 
     async def find_element_by_text(
@@ -1836,6 +1861,7 @@ class BrowserService:
 
             return ActionResult(success=True, message=f"Scrolled {direction}")
         except Exception as e:
+            _metrics.observe_browser_action_error("scroll_page", _browser_error_type(e))
             return ActionResult(success=False, message=f"Scroll failed: {e}", error=str(e))
 
 

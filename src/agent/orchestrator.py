@@ -37,6 +37,7 @@ from ..core.models import (
     TaskResult,
 )
 from ..infrastructure import BrowserService, LLMService
+from ..infrastructure import metrics as _metrics
 from ..utils import DOMProcessor
 from .checkpoint import AgentCheckpoint
 
@@ -173,6 +174,22 @@ class AgentOrchestrator:
         self._invalid_id_streak = 0
 
     async def _wait_for_rate_limit(self) -> None:
+        """
+        Ограничение частоты запросов (rate limiting) перед любым вызовом LLM.
+
+        Observability: the ACTUAL wall-clock time spent pacing is exported
+        as cogniweb_rate_limit_wait_seconds. This measures request-RATE
+        throttling (protecting the LLM provider), which is deliberately a
+        different mechanism from per-tenant usage/quota limits - see
+        docs/MONITORING.md; do not conflate the two in dashboards.
+        """
+        wait_started = time.monotonic()
+        try:
+            await self._wait_for_rate_limit_impl()
+        finally:
+            _metrics.observe_rate_limit_wait(time.monotonic() - wait_started)
+
+    async def _wait_for_rate_limit_impl(self) -> None:
         """
         Ограничение частоты запросов (rate limiting) перед любым вызовом LLM.
 
@@ -1521,19 +1538,31 @@ Always think step-by-step and explain your reasoning."""
             "'VERDICT:FAIL'. If FAIL, add one short sentence explaining what "
             "is missing after the verdict."
         )
+        eval_started = time.monotonic()
         try:
             response = await self._generate_text_with_rate_limit(
                 messages=[{"role": "user", "content": prompt}], temperature=0.0
             )
         except Exception as e:
             logger.warning(f"Evaluator call failed, accepting the 'done' as-is: {e}")
+            # Verdict "error": the evaluator crashed - counted, never raised.
+            _metrics.observe_evaluator_verdict("error", time.monotonic() - eval_started)
             return None
 
+        # Verdict "error" also covers "did not parse": a response without a
+        # recognizable VERDICT line is an evaluator quality signal, not a pass.
         match = re.search(r"VERDICT:\s*(PASS|FAIL)", response, re.IGNORECASE)
         if not match:
+            _metrics.observe_evaluator_verdict("error", time.monotonic() - eval_started)
             return None
         if match.group(1).upper() == "PASS":
+            _metrics.observe_evaluator_verdict("pass", time.monotonic() - eval_started)
             return None
+        # NOTE: this module exports the BINARY verdict + its trend as the
+        # measurable proxy for self-assessment quality (docs/MONITORING.md):
+        # a true Expected Calibration Error requires a numeric confidence
+        # score, which this evaluator deliberately does not produce.
+        _metrics.observe_evaluator_verdict("fail", time.monotonic() - eval_started)
         reason = response[match.end() :].strip().strip("-: ")
         return reason or "The completion summary does not satisfy the task."
 
@@ -1851,6 +1880,12 @@ Always think step-by-step and explain your reasoning."""
         tool = action.tool
         args = self._normalize_action_args(action.args)
         result = ActionResult(success=False, message="Unknown tool")
+
+        # Observability: time the WHOLE dispatch (the if/elif routing below)
+        # with a single recording point at the method's single exit - latency
+        # per tool + success/failure outcome (cogniweb_tool_*). `tool` comes
+        # from AgentAction's closed Literal, so label cardinality is bounded.
+        dispatch_started = time.monotonic()
 
         # Route to appropriate handler
         if tool == "navigate":
@@ -2508,6 +2543,12 @@ Always think step-by-step and explain your reasoning."""
                 success=False, message=f"Unknown tool: {tool}", error="UnknownTool"
             )
 
+        # Single exit point: record latency + outcome exactly once per
+        # dispatch (never inside individual branches). observe_* swallows
+        # its own exceptions - metrics cannot break a tool run.
+        _metrics.observe_tool_call(
+            tool, bool(result.success), time.monotonic() - dispatch_started
+        )
         return result
 
     def _get_invalid_element_error(self, element_id: int) -> ActionResult:

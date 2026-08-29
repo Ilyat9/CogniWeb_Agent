@@ -21,6 +21,11 @@ import math
 import time
 from collections import deque
 
+# Observability mirror only: metrics is an OPTIONAL dependency module and
+# every observe_* is a safe no-op without prometheus_client, so importing
+# it here cannot make usage accounting depend on the package.
+from . import metrics as _metrics
+
 
 class UsageTracker:
     def __init__(
@@ -94,8 +99,13 @@ class UsageTracker:
         """Called by the dispatcher when a task finishes; tokens come from
         TaskResult.tokens_used (None = provider reported nothing)."""
         if tokens_used:
+            tokens = int(tokens_used)
             totals = self._totals.setdefault(tenant_id, {"tasks": 0.0, "tokens": 0.0})
-            totals["tokens"] += int(tokens_used)
+            totals["tokens"] += tokens
+            # Mirror the same increment into Prometheus (cogniweb_tenant_
+            # tokens_used_total) so dashboards don't need a second source.
+            # observe_* swallows its own exceptions - accounting unaffected.
+            _metrics.observe_tenant_tokens(tenant_id, tokens)
 
     def estimated_cost_usd(self, tenant_id: str) -> float:
         tokens = self._totals.get(tenant_id, {}).get("tokens", 0.0)

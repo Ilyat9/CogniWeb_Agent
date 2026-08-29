@@ -233,6 +233,45 @@ def create_app(
             await _stop_worker()
 
     app = FastAPI(title="CogniWeb Agent API", version="1.1", lifespan=lifespan)
+
+    # ---- HTTP observability middleware ----------------------------------
+    # Measures every HTTP request: cogniweb_http_requests_total (method,
+    # path TEMPLATE, status) + cogniweb_http_request_duration_seconds.
+    # Cardinality: the label uses request.scope["route"].path (set by the
+    # router during call_next), e.g. /task/{task_id} - never the concrete
+    # task_id. Unmatched routes (404s before routing) bucket as "unmatched".
+    # /metrics and /health are excluded: self-scrape + probe traffic is
+    # noise in RPS/latency percentiles. Safe without prometheus_client -
+    # every observe_* is a no-op there. Exceptions inside observe_* can
+    # never propagate (try/finally + internally swallowed).
+    _METRICS_EXCLUDED_PATHS = frozenset({"/metrics", "/health"})
+
+    @app.middleware("http")
+    async def _observe_http_request(request: Request, call_next):
+        request_started = time.monotonic()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            try:
+                raw_path = request.url.path
+                if raw_path not in _METRICS_EXCLUDED_PATHS:
+                    route = request.scope.get("route")
+                    path_template = getattr(route, "path", None) or "unmatched"
+                    _metrics.observe_http_request(
+                        request.method,
+                        path_template,
+                        status,
+                        time.monotonic() - request_started,
+                    )
+            except Exception:  # noqa: BLE001 - metrics must never 500 a request
+                logger.debug("http metrics middleware failed", exc_info=True)
+
+    # NOTE: no `return` inside the finally above - a bare return there would
+    # silently swallow any exception raised by call_next itself.
+
     # Internal records: plain dicts (not TaskStatus) so we can carry the
     # raw task text / starting_url alongside the visible status fields,
     # plus the UI-facing step-event buffer and pub/sub state.
@@ -537,10 +576,14 @@ def create_app(
             )
             # Terminal metric: success/fail + wall-clock duration (from the
             # runner's own accounting; 0.0 for pre-start stops is honest).
+            # steps_taken: cogniweb_task_steps_total is a Histogram of steps
+            # per finished task - a cheap degradation signal (agent walking
+            # in circles shows up here before latency/errors rise).
             _metrics.observe_task_finished(
                 record.get("tenant_id", DEFAULT_TENANT_ID),
                 bool((record.get("result") or {}).get("success")),
                 float((record.get("result") or {}).get("total_duration_seconds") or 0.0),
+                steps_taken=int((record.get("result") or {}).get("steps_taken") or 0),
             )
             record["state"] = "finished"
             # Durable BEFORE publishing: a subscriber that sees the
@@ -806,6 +849,11 @@ def create_app(
         )
         allowed, reason, retry_after = usage.check_submission(tenant, running_for_tenant)
         if not allowed:
+            # Observability: per-tenant usage/quota refusal (token budget or
+            # task quota - a DIFFERENT mechanism from LLM request pacing,
+            # which is cogniweb_rate_limit_wait_seconds). `reason` is one of
+            # three machine-readable codes from check_submission.
+            _metrics.observe_usage_rejection(tenant, reason or "unknown")
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -998,6 +1046,7 @@ def create_app(
                 record.get("tenant_id", DEFAULT_TENANT_ID),
                 bool((record.get("result") or {}).get("success")),
                 float((record.get("result") or {}).get("total_duration_seconds") or 0.0),
+                steps_taken=int((record.get("result") or {}).get("steps_taken") or 0),
             )
             record["state"] = "finished"
             await _persist_now(record)
